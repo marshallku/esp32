@@ -30,11 +30,13 @@ release:
 flash: build
 	$(ESPENV) espflash flash --chip $(CHIP) --port $(PORT) $(BIN)
 
-run:
-	$(ESPENV) cargo run -p $(PKG)
+# Flash without entering download mode after, then open monitor without resetting.
+# This avoids the "waiting for download" hang on USB-Serial-JTAG boards.
+run: flash
+	$(ESPENV) espflash monitor --chip $(CHIP) --port $(PORT) --baud 115200 --before no-reset
 
 monitor:
-	$(ESPENV) espflash monitor --chip $(CHIP) --port $(PORT) --baud 115200
+	$(ESPENV) espflash monitor --chip $(CHIP) --port $(PORT) --baud 115200 --before no-reset
 
 reset:
 	$(ESPENV) espflash reset --port $(PORT)
