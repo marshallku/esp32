@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["scd41-monitor"]
+
+# Profiles must live at the workspace root in a Cargo workspace.
+# For fine tuning, see https://doc.rust-lang.org/cargo/reference/profiles.html
+[profile.dev]
+# Default debug profile is too slow/large for resource-constrained devices.
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1
+debug         = 2
+lto           = "fat"
+opt-level     = "s"

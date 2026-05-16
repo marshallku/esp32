@@ -1,0 +1,20 @@
+[package]
+edition      = "2024"
+name         = "scd41-monitor"
+rust-version = "1.88"
+version      = "0.1.0"
+
+[[bin]]
+name = "scd41-monitor"
+path = "./src/bin/main.rs"
+
+[dependencies]
+esp-hal = { version = "~1.1.0", features = ["esp32s3", "unstable"] }
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3"] }
+esp-println = { version = "0.17.0", features = ["esp32s3", "log-04"] }
+esp-backtrace = { version = "0.19.0", features = ["esp32s3", "panic-handler", "println"] }
+
+critical-section = "1.2.0"
+log = "0.4"
+
+scd4x = "0.5.0"
