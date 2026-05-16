@@ -18,3 +18,7 @@ critical-section = "1.2.0"
 log = "0.4"
 
 scd4x = "0.5.0"
+
+ssd1306             = "0.10.0"
+embedded-graphics   = "0.8.1"
+heapless            = "0.8.0"
