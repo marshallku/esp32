@@ -1,3 +1,8 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
 # will have compiled files and executables
 debug/
 target/

@@ -2,7 +2,9 @@ PORT ?= /dev/ttyACM0
 CHIP := esp32s3
 PKG  ?= scd41-monitor
 BIN  := target/xtensa-esp32s3-none-elf/debug/$(PKG)
-ESPENV := . $$HOME/.cargo/env-esp.sh &&
+# Source toolchain + .env (so env!() can pull WIFI_*/INFLUX_* at build time).
+# .env is gitignored — see .env.example for the schema.
+ESPENV := . $$HOME/.cargo/env-esp.sh; if [ -f .env ]; then set -a; . ./.env; set +a; fi;
 
 .PHONY: help build flash run monitor reset info release clean
 
