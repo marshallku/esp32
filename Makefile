@@ -1,10 +1,13 @@
-PORT ?= /dev/ttyACM0
-CHIP := esp32s3
-PKG  ?= scd41-monitor
-BIN  := target/xtensa-esp32s3-none-elf/debug/$(PKG)
-# Source toolchain + .env (so env!() can pull WIFI_*/INFLUX_* at build time).
-# .env is gitignored — see .env.example for the schema.
-ESPENV := . $$HOME/.cargo/env-esp.sh; if [ -f .env ]; then set -a; . ./.env; set +a; fi;
+PORT     ?= /dev/ttyACM0
+CHIP     := esp32s3
+PKG      ?= scd41-monitor
+LOCATION ?= main_room
+BIN      := target/xtensa-esp32s3-none-elf/debug/$(PKG)
+# Source toolchain + .env (common) + .env.<LOCATION> (per-board overrides).
+# .env* are gitignored — see .env.example for schema.
+ESPENV := . $$HOME/.cargo/env-esp.sh; \
+  if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
+  if [ -f .env.$(LOCATION) ]; then set -a; . ./.env.$(LOCATION); set +a; fi;
 
 .PHONY: help build flash run monitor reset info release clean
 
@@ -20,8 +23,11 @@ help:
 	@echo "  make clean            cargo clean (workspace 전체)"
 	@echo ""
 	@echo "현재 기본 패키지: $(PKG)"
-	@echo "다른 패키지: make run PKG=other-member"
-	@echo "다른 포트: make run PORT=/dev/ttyACM1"
+	@echo "현재 location:   $(LOCATION) (.env.$(LOCATION) merged on top of .env)"
+	@echo ""
+	@echo "다른 패키지:  make run PKG=other-member"
+	@echo "다른 포트:    make run PORT=/dev/ttyACM1"
+	@echo "다른 location: make flash LOCATION=living_room PORT=/dev/ttyACM1"
 
 build:
 	$(ESPENV) cargo build -p $(PKG)
@@ -32,13 +38,17 @@ release:
 flash: build
 	$(ESPENV) espflash flash --chip $(CHIP) --port $(PORT) $(BIN)
 
-# Flash without entering download mode after, then open monitor without resetting.
-# This avoids the "waiting for download" hang on USB-Serial-JTAG boards.
+# espflash monitor tries a chip handshake that hangs on ESP32-S3 native USB.
+# Use plain stty+cat — USB-CDC is just a serial stream, no protocol needed.
 run: flash
-	$(ESPENV) espflash monitor --chip $(CHIP) --port $(PORT) --baud 115200 --before no-reset
+	@stty -F $(PORT) 115200 raw -echo -echoe -echok -echoctl -echoke -ixon -hupcl 2>/dev/null || true
+	@echo "[monitor] $(PORT) — ctrl+c to exit"
+	@cat $(PORT)
 
 monitor:
-	$(ESPENV) espflash monitor --chip $(CHIP) --port $(PORT) --baud 115200 --before no-reset
+	@stty -F $(PORT) 115200 raw -echo -echoe -echok -echoctl -echoke -ixon -hupcl 2>/dev/null || true
+	@echo "[monitor] $(PORT) — ctrl+c to exit"
+	@cat $(PORT)
 
 reset:
 	$(ESPENV) espflash reset --port $(PORT)

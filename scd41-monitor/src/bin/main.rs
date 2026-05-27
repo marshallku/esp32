@@ -242,11 +242,14 @@ async fn main(spawner: Spawner) -> ! {
     let mut have_sensor = start_periodic(&mut scd_i2c, &delay);
     println!("SCD41 start_periodic: {}", if have_sensor { "OK" } else { "FAIL" });
 
-    // ---- SSD1306 ----
+    // ---- SSD1306 (optional — runs headless if absent) ----
     let interface = I2CDisplayInterface::new(display_i2c);
     let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
         .into_buffered_graphics_mode();
-    display.init().expect("SSD1306 init");
+    let have_display = display.init().is_ok();
+    if !have_display {
+        println!("SSD1306 not responding — running headless");
+    }
 
     let big = MonoTextStyleBuilder::new()
         .font(&FONT_10X20)
@@ -258,14 +261,16 @@ async fn main(spawner: Spawner) -> ! {
         .build();
 
     // Splash while WiFi comes up.
-    display.clear_buffer();
-    Text::with_baseline("air monitor", Point::new(0, 0), small, Baseline::Top)
-        .draw(&mut display).ok();
-    Text::with_baseline("connecting WiFi...", Point::new(0, 12), small, Baseline::Top)
-        .draw(&mut display).ok();
-    Text::with_baseline(SSID, Point::new(0, 24), small, Baseline::Top)
-        .draw(&mut display).ok();
-    display.flush().ok();
+    if have_display {
+        display.clear_buffer();
+        Text::with_baseline("air monitor", Point::new(0, 0), small, Baseline::Top)
+            .draw(&mut display).ok();
+        Text::with_baseline("connecting WiFi...", Point::new(0, 12), small, Baseline::Top)
+            .draw(&mut display).ok();
+        Text::with_baseline(SSID, Point::new(0, 24), small, Baseline::Top)
+            .draw(&mut display).ok();
+        display.flush().ok();
+    }
 
     // ---- WiFi ----
     println!("WiFi: connecting to '{}'", SSID);
@@ -372,6 +377,8 @@ async fn main(spawner: Spawner) -> ! {
             }
         }
 
-        render(&mut display, &big, &l1, &l2, &l3);
+        if have_display {
+            render(&mut display, &big, &l1, &l2, &l3);
+        }
     }
 }
