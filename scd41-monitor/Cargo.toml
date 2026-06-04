@@ -8,6 +8,14 @@ version      = "0.1.0"
 name = "scd41-monitor"
 path = "./src/bin/main.rs"
 
+[[bin]]
+name = "bitbang-test"
+path = "./src/bin/bitbang_test.rs"
+
+[[bin]]
+name = "heartbeat"
+path = "./src/bin/heartbeat.rs"
+
 [dependencies]
 esp-hal = { version = "~1.1.0", features = ["esp32s3", "unstable", "log-04"] }
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3"] }

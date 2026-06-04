@@ -129,6 +129,24 @@ fn start_periodic(i2c: &mut I2c<'_, Blocking>, delay: &Delay) -> bool {
     i2c.write(SCD41_ADDR, &[0x21, 0xB1]).is_ok() // start_periodic
 }
 
+fn scan_i2c(i2c: &mut I2c<'_, Blocking>, label: &str) {
+    println!("{} scan start", label);
+    let mut found = 0u32;
+    for addr in 0x08u8..=0x77 {
+        match i2c.write(addr, &[]) {
+            Ok(_) => {
+                println!("{} ACK at 0x{:02x}", label, addr);
+                found += 1;
+            }
+            Err(e) if addr == SCD41_ADDR => {
+                println!("{} no ACK at SCD41 0x62: {:?}", label, e);
+            }
+            Err(_) => {}
+        }
+    }
+    println!("{} scan done: {} device(s)", label, found);
+}
+
 // --- display ----------------------------------------------------------------
 type Display<'a> = Ssd1306<
     I2CInterface<I2c<'a, Blocking>>,
@@ -231,13 +249,16 @@ async fn main(spawner: Spawner) -> ! {
     let i2c1_cfg = I2cConfig::default()
         .with_frequency(esp_hal::time::Rate::from_khz(100))
         .with_timeout(BusTimeout::Maximum);
-    let display_i2c = I2c::new(peripherals.I2C1, i2c1_cfg)
+    let mut display_i2c = I2c::new(peripherals.I2C1, i2c1_cfg)
         .expect("I2C1 init")
         .with_sda(peripherals.GPIO10)
         .with_scl(peripherals.GPIO11);
 
     let delay = Delay::new();
     delay.delay_millis(1500); // SCD41 power-up settle
+
+    scan_i2c(&mut scd_i2c, "I2C0 SCD41");
+    scan_i2c(&mut display_i2c, "I2C1 SSD1306");
 
     let mut have_sensor = start_periodic(&mut scd_i2c, &delay);
     println!("SCD41 start_periodic: {}", if have_sensor { "OK" } else { "FAIL" });
