@@ -1,8 +1,9 @@
 PORT     ?= /dev/ttyACM0
 CHIP     := esp32s3
 PKG      ?= scd41-monitor
+BIN      ?= $(PKG)
 LOCATION ?= main_room
-BIN      := target/xtensa-esp32s3-none-elf/debug/$(PKG)
+BIN_PATH := target/xtensa-esp32s3-none-elf/debug/$(BIN)
 # Source toolchain + .env (common) + .env.<LOCATION> (per-board overrides).
 # .env* are gitignored — see .env.example for schema.
 ESPENV := . $$HOME/.cargo/env-esp.sh; \
@@ -15,6 +16,7 @@ help:
 	@echo "ESP32-S3 monorepo workspace — usage:"
 	@echo "  make run [PKG=...]    빌드 + 플래시 + 시리얼 모니터 (인터랙티브, ctrl+c로 종료)"
 	@echo "  make flash [PKG=...]  빌드 + 플래시만 (모니터 없음)"
+	@echo "  make run BIN=...      특정 바이너리 빌드 + 플래시 + 모니터"
 	@echo "  make monitor          시리얼 모니터만 (플래시 안 함)"
 	@echo "  make build [PKG=...]  cargo build (Xtensa toolchain)"
 	@echo "  make reset            보드 reset (정상 부팅)"
@@ -23,6 +25,7 @@ help:
 	@echo "  make clean            cargo clean (workspace 전체)"
 	@echo ""
 	@echo "현재 기본 패키지: $(PKG)"
+	@echo "현재 기본 바이너리: $(BIN)"
 	@echo "현재 location:   $(LOCATION) (.env.$(LOCATION) merged on top of .env)"
 	@echo ""
 	@echo "다른 패키지:  make run PKG=other-member"
@@ -30,13 +33,13 @@ help:
 	@echo "다른 location: make flash LOCATION=living_room PORT=/dev/ttyACM1"
 
 build:
-	$(ESPENV) cargo build -p $(PKG)
+	$(ESPENV) cargo build -p $(PKG) --bin $(BIN)
 
 release:
-	$(ESPENV) cargo build --release -p $(PKG)
+	$(ESPENV) cargo build --release -p $(PKG) --bin $(BIN)
 
 flash: build
-	$(ESPENV) espflash flash --chip $(CHIP) --port $(PORT) $(BIN)
+	$(ESPENV) espflash flash --chip $(CHIP) --port $(PORT) $(BIN_PATH)
 
 # espflash monitor tries a chip handshake that hangs on ESP32-S3 native USB.
 # Use plain stty+cat — USB-CDC is just a serial stream, no protocol needed.
