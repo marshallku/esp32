@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["scd41-monitor", "presence-monitor"]
+members = ["scd41-monitor"]
 
 # Profiles must live at the workspace root in a Cargo workspace.
 # For fine tuning, see https://doc.rust-lang.org/cargo/reference/profiles.html

@@ -1,10 +1,12 @@
-//! Air sensor: reads SCD41 (CO2/temp/humidity), shows on SSD1306 OLED, and
-//! POSTs samples to InfluxDB v2 over WiFi.
+//! Air sensor: reads SCD41 (CO2/temp/humidity) plus an LD2410 presence sensor,
+//! shows both on an SSD1306 OLED, and POSTs samples to InfluxDB v2 over WiFi.
 //!
 //! Bus layout (screw-terminal expansion board accepts one wire per pin, so
 //! SCD41 and SSD1306 each get their own I2C controller):
-//!   - I2C0: SCD41   (SDA=GPIO8,  SCL=GPIO9)
-//!   - I2C1: SSD1306 (SDA=GPIO10, SCL=GPIO11)
+//!   - I2C0:  SCD41   (SDA=GPIO8,  SCL=GPIO9)
+//!   - I2C1:  SSD1306 (SDA=GPIO10, SCL=GPIO11)
+//!   - GPIO16: LD2410 OUT (digital presence: HIGH=occupied). Wire the sensor
+//!     VCC->5V, GND->GND, OUT->GPIO16. TX/RX unused in this OUT-only mode.
 //!
 //! Required env vars at build time (loaded by the workspace Makefile from .env):
 //!   WIFI_SSID, WIFI_PASSWORD,
@@ -34,6 +36,7 @@ use esp_backtrace as _;
 use esp_hal::{
     clock::CpuClock,
     delay::Delay,
+    gpio::{Input, InputConfig, Pull},
     i2c::master::{BusTimeout, Config as I2cConfig, I2c},
     interrupt::software::SoftwareInterruptControl,
     timer::timg::TimerGroup,
@@ -254,6 +257,13 @@ async fn main(spawner: Spawner) -> ! {
         .with_sda(peripherals.GPIO10)
         .with_scl(peripherals.GPIO11);
 
+    // ---- LD2410 presence: OUT pin on GPIO16 (push-pull 3V3, pull-down keeps
+    //      a defined LOW=vacant if the sensor is disconnected) ----
+    let ld2410_out = Input::new(
+        peripherals.GPIO16,
+        InputConfig::default().with_pull(Pull::Down),
+    );
+
     let delay = Delay::new();
     delay.delay_millis(1500); // SCD41 power-up settle
 
@@ -338,6 +348,10 @@ async fn main(spawner: Spawner) -> ! {
     loop {
         Timer::after(Duration::from_secs(5)).await;
 
+        // Presence is a bare GPIO read — always available, even when the
+        // (flaky) SCD41 errors, so it rides on every InfluxDB POST below.
+        let present = ld2410_out.is_high();
+
         let sample = if have_sensor {
             poll_scd41(&mut scd_i2c, &delay)
         } else {
@@ -348,46 +362,36 @@ async fn main(spawner: Spawner) -> ! {
         let mut l2: HString<24> = HString::new();
         let mut l3: HString<24> = HString::new();
 
+        // Line Protocol always carries presence; the air fields are appended
+        // only when a fresh SCD41 sample is available.
+        let mut line: HString<192> = HString::new();
+        let _ = write!(line, "{},{} presence={}i", MEASUREMENT, TAGS, present as u8);
+
         match sample {
             Sample::Ok { co2, temp_c, hum_pct } => {
                 consecutive_err = 0;
                 println!(
-                    "CO2: {} ppm  |  T: {:.2} C  |  H: {:.2} %",
-                    co2, temp_c, hum_pct
+                    "CO2: {} ppm  |  T: {:.2} C  |  H: {:.2} %  |  presence: {}",
+                    co2, temp_c, hum_pct, present as u8
                 );
 
                 let _ = write!(l1, "CO2 {} ppm", co2);
                 let _ = write!(l2, "T {:.1}C H {:.0}%", temp_c, hum_pct);
-
-                // Line Protocol: <measurement>,<tags> co2=<i>,temp=<f>,humid=<f>
-                let mut line: HString<192> = HString::new();
-                let _ = write!(
-                    line,
-                    "{},{} co2={}i,temp={:.2},humid={:.2}",
-                    MEASUREMENT, TAGS, co2, temp_c, hum_pct
-                );
-                match post_influx(stack, &tcp_client, &dns_client, &line).await {
-                    Ok(status) => {
-                        println!("InfluxDB POST -> {}", status);
-                        let _ = write!(l3, "InfluxDB: {}", status);
-                    }
-                    Err(_) => {
-                        let _ = write!(l3, "InfluxDB: err");
-                    }
-                }
+                let _ = write!(line, ",co2={}i,temp={:.2},humid={:.2}", co2, temp_c, hum_pct);
             }
             Sample::NotReady => {
-                println!("SCD41 not ready");
+                println!("SCD41 not ready  |  presence: {}", present as u8);
                 let _ = write!(l1, "SCD41 wait");
                 let _ = write!(l2, "warming up");
-                let _ = write!(l3, "");
             }
             Sample::Error(stage) => {
                 consecutive_err += 1;
-                println!("SCD41 error ({}) streak={}", stage, consecutive_err);
+                println!(
+                    "SCD41 error ({}) streak={}  |  presence: {}",
+                    stage, consecutive_err, present as u8
+                );
                 let _ = write!(l1, "SCD41 ERR");
                 let _ = write!(l2, "@{} x{}", stage, consecutive_err);
-                let _ = write!(l3, "");
 
                 if consecutive_err >= 3 {
                     println!("SCD41 re-init attempt");
@@ -395,6 +399,16 @@ async fn main(spawner: Spawner) -> ! {
                     println!("re-init: {}", if have_sensor { "OK" } else { "FAIL" });
                     consecutive_err = 0;
                 }
+            }
+        }
+
+        match post_influx(stack, &tcp_client, &dns_client, &line).await {
+            Ok(status) => {
+                println!("InfluxDB POST -> {}", status);
+                let _ = write!(l3, "P{} DB {}", present as u8, status);
+            }
+            Err(_) => {
+                let _ = write!(l3, "P{} DB err", present as u8);
             }
         }
 
