@@ -10,8 +10,9 @@
 //!   - LCD  (bit-banged SPI): SCK=GPIO11 MOSI=GPIO12 DC=GPIO5 CS=GPIO40 RST=GPIO41
 //!   - I2C0:        SDA=GPIO13  SCL=GPIO14   — SHTC3, PCF85063, ES8311, ES7210
 //!
-//! The board has no usable clock of its own here, so data age comes from the
-//! server's `age` field rather than a local timestamp.
+//! The board has no usable clock of its own here, so the footer shows the
+//! wall-clock stamp the server preformats into `generated_at` rather than any
+//! locally computed age.
 //!
 //! Required env vars at build time (loaded by the workspace Makefile from
 //! `.env`): `WIFI_SSID`, `WIFI_PASSWORD`, `STATUS_URL`, `STATUS_TOKEN`.
@@ -407,10 +408,11 @@ async fn main(spawner: Spawner) -> ! {
                 consecutive_failures += 1;
                 println!("fetch failed (streak {})", consecutive_failures);
 
-                // The first failure is left alone: the panel keeps showing the
-                // last good screen, which is still true within its stated age.
-                // Only a sustained outage is worth overwriting it with — at
-                // that point the age on screen would be the misleading part.
+                // The first failure is left alone: the panel keeps showing
+                // the last good screen, which still carries the wall-clock
+                // stamp of when it was true. Only a sustained outage is worth
+                // overwriting it with — before that, a reader comparing the
+                // footer against a clock already has the whole story.
                 if consecutive_failures >= 3 {
                     render::message(panel, "NO DATA", error.detail());
                     let _ = panel.flush();

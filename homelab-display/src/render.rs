@@ -128,21 +128,6 @@ fn duration(secs: u32) -> String<10> {
     out
 }
 
-/// Compact age for the footer: seconds up to a minute, then minutes, then hours.
-fn age_text(secs: i32) -> String<16> {
-    let mut out = String::new();
-    if secs < 0 {
-        let _ = write!(out, "no data");
-    } else if secs < 60 {
-        let _ = write!(out, "{}s ago", secs);
-    } else if secs < 3_600 {
-        let _ = write!(out, "{}m ago", secs / 60);
-    } else {
-        let _ = write!(out, "{}h ago", secs / 3_600);
-    }
-    out
-}
-
 /// Draw the whole screen. Callers flush afterwards.
 pub fn draw<D>(target: &mut D, status: &Status, room: Option<Room>)
 where
@@ -358,9 +343,14 @@ where
         text(target, &pending, PAD, FOOTER_Y, ink);
     }
 
-    let mut age: String<24> = String::new();
-    let _ = write!(age, "data {}", age_text(status.age));
-    text_right(target, &age, W - PAD, FOOTER_Y, ink);
+    // A wall-clock stamp rather than "21s ago": the age is something this
+    // board asserts about itself, so firmware that wedges after a good draw
+    // would keep claiming the data is fresh. The stamp is a value the board
+    // only echoes, so a frozen screen simply stops agreeing with the clock on
+    // the wall.
+    let mut updated: String<32> = String::new();
+    let _ = write!(updated, "updated {}", status.generated_at);
+    text_right(target, &updated, W - PAD, FOOTER_Y, ink);
 }
 
 /// A standalone message, used before the first successful fetch and after a

@@ -68,10 +68,18 @@ moment it is worth looking at. Prometheus lives in-cluster and dies with
 `prd01`, so its half degrades to a "host metrics unavailable" line while the
 Kuma half stays live.
 
-The board has no synchronised clock, so it cannot tell how old a document is
-from a timestamp. The server stamps `age` at *request* time instead, and the
-screen inverts its whole header when that goes stale — a monitoring display
-that fails quietly is worse than no display at all.
+The board has no synchronised clock, so the server sends the snapshot's
+wall-clock time as a preformatted string and the footer echoes it. That
+indirection is the point. A relative age — "21s ago" — is a claim the display
+makes about itself, and firmware that wedges just after a good draw would keep
+making that claim forever while looking perfectly healthy. A stamp the board
+only copies stops agreeing with your wristwatch instead, which is checkable
+without trusting the board at all.
+
+The server still computes an age and the screen still inverts its whole header
+when that goes stale; the two catch different failures — a wedged aggregator
+versus a wedged display. A monitoring display that fails quietly is worse than
+no display at all.
 
 The endpoint is authenticated. The document names internal hosts, ports and
 services — a subset of what Uptime Kuma keeps behind a login — so it is not

@@ -70,9 +70,17 @@ pub struct Hosts {
 /// The whole document.
 #[derive(Debug, Deserialize)]
 pub struct Status {
+    /// Wall-clock time the snapshot was built, preformatted by the server as
+    /// `MM-DD HH:MM:SS` in its timezone.
+    ///
+    /// This is what the footer shows, and it is deliberately a value this
+    /// board only echoes. A relative age is a claim the display makes about
+    /// itself, so a firmware that wedges after a good draw keeps showing
+    /// "5s ago" and looks healthy forever. A frozen wall-clock stamp stops
+    /// matching a wristwatch instead.
+    pub generated_at: String<24>,
     /// Seconds since the snapshot was built, stamped when the request was
-    /// served. The board has no clock, so this is the only way it can know
-    /// how old the data is.
+    /// served. Still carried because it is what `stale` is derived from.
     pub age: i32,
     pub stale: bool,
     /// False before the aggregator's first refresh has landed.
