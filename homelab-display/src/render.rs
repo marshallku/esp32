@@ -23,7 +23,7 @@ use embedded_graphics::{
 };
 use heapless::String;
 
-use crate::model::Status;
+use crate::{model::Status, shtc3::Room};
 
 const W: i32 = crate::st7305::WIDTH as i32;
 const H: i32 = crate::st7305::HEIGHT as i32;
@@ -41,13 +41,6 @@ const ISSUES_END: i32 = ISSUES_Y + 14 + ISSUE_ROW_H * 6;
 const HOSTS_Y: i32 = ISSUES_END + 5;
 const HOST_ROW_H: i32 = 12;
 const FOOTER_Y: i32 = H - 12;
-
-/// Environment reading from the on-board SHTC3, when it answered.
-#[derive(Clone, Copy)]
-pub struct Room {
-    pub temp_c: f32,
-    pub hum_pct: f32,
-}
 
 type Style = MonoTextStyle<'static, BinaryColor>;
 

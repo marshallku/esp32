@@ -23,6 +23,10 @@ use embedded_graphics::{
     text::{Baseline, Text},
 };
 use esp_backtrace as _;
+// The library now carries the networking module, so esp-radio ends up in this
+// binary's link even though it never touches the radio. Pulling esp-rtos in
+// supplies the scheduler symbols esp-radio references; nothing here starts it.
+use esp_rtos as _;
 use esp_hal::{
     clock::CpuClock,
     delay::Delay,
