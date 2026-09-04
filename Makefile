@@ -27,8 +27,10 @@ help:
 	@echo "현재 기본 패키지: $(PKG)"
 	@echo "현재 기본 바이너리: $(BIN)"
 	@echo "현재 location:   $(LOCATION) (.env.$(LOCATION) merged on top of .env)"
+	@echo "                 — LOCATION은 scd41-monitor 전용, homelab-display는 무시"
 	@echo ""
-	@echo "다른 패키지:  make run PKG=other-member"
+	@echo "패키지:       scd41-monitor (기본) / homelab-display"
+	@echo "다른 패키지:  make run PKG=homelab-display"
 	@echo "다른 포트:    make run PORT=/dev/ttyACM1"
 	@echo "다른 location: make flash LOCATION=living_room PORT=/dev/ttyACM1"
 
