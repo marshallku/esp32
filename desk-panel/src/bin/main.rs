@@ -10,6 +10,10 @@
 //!   - RGB panel: DPI on 24 GPIOs, ST7701 init over 3-wire SPI CS=39 SCK=48 SDA=47
 //!   - backlight GPIO38, touch GT911 on I2C0 SDA=19 SCL=45 (polled, addr 0x5D)
 //!   - UART0 (CH340, the only USB port): TX=43 esp-println, RX=44 deskd lines
+//!
+//! The dashboard screen needs WiFi: `WIFI_SSID`, `WIFI_PASSWORD`,
+//! `STATUS_URL` and `STATUS_TOKEN` at build time, loaded from `.env` by the
+//! workspace Makefile — the same document and token homelab-display uses.
 
 #![no_std]
 #![no_main]
@@ -21,14 +25,18 @@ use desk_core::{
     gesture::Recognizer,
     protocol::{self, DeviceMsg},
 };
+use desk_core::app::View;
 use desk_panel::{
+    dashboard::{Dash, Net, Update},
     display::Display,
     display_pins,
     gt911::Gt911,
     link::{self, LINES, Line},
+    status::{self, UPDATES},
     ui,
 };
 use embassy_executor::Spawner;
+use embassy_net::StackResources;
 use embassy_time::{Instant, Timer};
 use esp_backtrace as _;
 use esp_hal::{
@@ -40,24 +48,28 @@ use esp_hal::{
     timer::timg::TimerGroup,
 };
 use esp_println::println;
+use esp_radio::wifi::{Config as WifiConfig, ControllerConfig, sta::StationConfig};
 use esp_rtos::embassy::InterruptExecutor;
 use static_cell::StaticCell;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 const FW: &str = concat!("desk-panel ", env!("CARGO_PKG_VERSION"));
+const SSID: &str = env!("WIFI_SSID");
+const PASSWORD: &str = env!("WIFI_PASSWORD");
 
 /// Touch poll and UI loop period. The GT911 reports at ~100 Hz.
 const POLL_MS: u64 = 10;
 
 #[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
+async fn main(spawner: Spawner) -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    // Internal RAM first, so small allocations stay fast; the two frames are
-    // too big for it and land in PSRAM.
-    esp_alloc::heap_allocator!(size: 64 * 1024);
+    // Internal RAM first, so small allocations stay fast and the WiFi stack
+    // gets the internal memory it needs; the two frames are too big for it
+    // and land in PSRAM.
+    esp_alloc::heap_allocator!(size: 100 * 1024);
     esp_alloc::psram_allocator!(
         peripherals.PSRAM,
         esp_hal::psram,
@@ -72,6 +84,8 @@ async fn main(_spawner: Spawner) -> ! {
     let sw = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw.software_interrupt0);
 
+    // The WiFi stack and homelab-status log through `log`.
+    esp_println::logger::init_logger(log::LevelFilter::Info);
     println!("=== {} ===", FW);
 
     static RX_EXECUTOR: StaticCell<InterruptExecutor<1>> = StaticCell::new();
@@ -88,7 +102,26 @@ async fn main(_spawner: Spawner) -> ! {
     }
 
     let mut display = Display::new(peripherals.LCD_CAM, peripherals.DMA_CH0, display_pins!(peripherals));
+
+    let station = WifiConfig::Station(StationConfig::default().with_ssid(SSID).with_password(PASSWORD.into()));
+    let (controller, interfaces) =
+        esp_radio::wifi::new(peripherals.WIFI, ControllerConfig::default().with_initial_config(station))
+            .expect("WiFi init");
+    let rng = esp_hal::rng::Rng::new();
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    let (stack, runner) = embassy_net::new(
+        interfaces.station,
+        embassy_net::Config::dhcpv4(Default::default()),
+        RESOURCES.init(StackResources::new()),
+        seed,
+    );
+    spawner.spawn(homelab_status::net::connection(controller).unwrap());
+    spawner.spawn(homelab_status::net::net_task(runner).unwrap());
+    spawner.spawn(status::fetch_task(stack).unwrap());
+
     let mut app = App::new(FW);
+    let mut dash = Dash::default();
     let mut gestures = Recognizer::default();
     let mut touch_failed = false;
 
@@ -138,8 +171,19 @@ async fn main(_spawner: Spawner) -> ! {
             link::send(&reply);
         }
 
-        if app.take_dirty() {
-            ui::draw(&mut display.canvas(), &app);
+        let mut dash_changed = false;
+        while let Ok(update) = UPDATES.try_receive() {
+            if let Update::Net(Net::NoLease) = update {
+                println!("still waiting for DHCP");
+            }
+            dash.apply(update);
+            dash_changed = true;
+        }
+
+        // `|` rather than `||`: the app's dirty flag must be taken (cleared)
+        // even when the dashboard alone would already force a redraw.
+        if app.take_dirty() | (dash_changed && matches!(app.view(), View::Dashboard)) {
+            ui::draw(&mut display.canvas(), &app, &dash);
             display.present();
         }
 

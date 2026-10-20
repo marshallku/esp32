@@ -21,28 +21,27 @@ use embedded_graphics::{
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 
+use crate::dashboard::{self, Dash};
+
 const BG: Rgb565 = Rgb565::BLACK;
 const DIM: Rgb565 = Rgb565::new(12, 24, 12);
 const ACCENT: Rgb565 = Rgb565::new(31, 45, 0);
 const WARN: Rgb565 = Rgb565::new(31, 20, 0);
+const ALARM: Rgb565 = Rgb565::new(24, 4, 4);
 
-pub fn draw<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App) {
+pub fn draw<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, dash: &Dash) {
     let _ = target.clear(BG);
     match app.view() {
         View::Prompt(prompt) => draw_prompt(target, prompt),
-        View::Dashboard => {
-            strip(target, app, "HOMELAB");
-            center(target, "dashboard", 240, Rgb565::WHITE);
-            center(target, "(arrives in the next firmware)", 270, DIM);
-        }
+        View::Dashboard => dashboard::draw(target, app, dash),
         View::Deck { keys, .. } => {
-            strip(target, app, "DECK");
+            strip(target, app, "DECK", false);
             for (i, key) in keys.iter().enumerate() {
                 draw_key(target, geometry::key_rect(i), key);
             }
         }
         View::NoDeck { link_up } => {
-            strip(target, app, "DECK");
+            strip(target, app, "DECK", false);
             let (line, color) =
                 if link_up { ("waiting for a layout from deskd", DIM) } else { ("PC not connected", WARN) };
             center(target, line, 250, color);
@@ -52,8 +51,13 @@ pub fn draw<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App) {
 
 /// Title on the left, page dots in the middle, link state and clock on the
 /// right. The dots count the dashboard as the first screen, matching the
-/// swipe order.
-fn strip<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, title: &str) {
+/// swipe order. `alarm` paints the whole strip as a warning.
+pub fn strip<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, title: &str, alarm: bool) {
+    if alarm {
+        let _ = Rectangle::new(Point::zero(), Size::new(W as u32, STRIP_H as u32))
+            .into_styled(PrimitiveStyle::with_fill(ALARM))
+            .draw(target);
+    }
     let style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
     let _ = Text::with_baseline(title, Point::new(12, 11), style, Baseline::Top).draw(target);
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["desk-panel", "homelab-display", "scd41-monitor"]
+members = ["desk-panel", "homelab-display", "homelab-status", "scd41-monitor"]
 # The PC side (daemon + shared desk-core) is its own workspace on the host
 # toolchain; see host/.cargo/config.toml.
 exclude = ["host"]

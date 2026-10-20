@@ -1,0 +1,21 @@
+[package]
+edition      = "2024"
+name         = "homelab-status"
+rust-version = "1.88"
+version      = "0.1.0"
+
+# The homelab status document and how to fetch it, shared by every board that
+# shows it. Logs through the `log` facade rather than esp-println: the boards
+# put their consoles on different esp-println backends (USB-Serial-JTAG vs
+# UART), and esp-println refuses a build that enables both.
+
+[dependencies]
+embassy-executor = "0.10.0"
+embassy-net      = { version = "0.9.0", features = ["dhcpv4", "medium-ethernet", "tcp", "dns"] }
+embassy-time     = "0.5.0"
+esp-radio        = { version = "0.18.0", features = ["esp32s3", "log-04", "wifi"] }
+heapless         = { version = "0.8.0", features = ["serde"] }
+log              = "0.4"
+reqwless         = { version = "0.14.0", default-features = false }
+serde            = { version = "1.0", default-features = false, features = ["derive"] }
+serde-json-core  = "0.6.0"

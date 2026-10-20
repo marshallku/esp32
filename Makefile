@@ -4,11 +4,13 @@ PKG      ?= scd41-monitor
 BIN      ?= $(PKG)
 LOCATION ?= main_room
 BIN_PATH := target/xtensa-esp32s3-none-elf/debug/$(BIN)
-# Source toolchain + .env (common) + .env.<LOCATION> (per-board overrides).
+# Source toolchain + .env (common) + .env.<LOCATION> (per-board overrides)
+# + .env.<PKG> (per-package overrides, e.g. a board on a different WiFi).
 # .env* are gitignored — see .env.example for schema.
 ESPENV := . $$HOME/.cargo/env-esp.sh; \
   if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
-  if [ -f .env.$(LOCATION) ]; then set -a; . ./.env.$(LOCATION); set +a; fi;
+  if [ -f .env.$(LOCATION) ]; then set -a; . ./.env.$(LOCATION); set +a; fi; \
+  if [ -f .env.$(PKG) ]; then set -a; . ./.env.$(PKG); set +a; fi;
 
 .PHONY: help build flash run monitor reset info release clean host-test host-build
 

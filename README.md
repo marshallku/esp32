@@ -89,7 +89,7 @@ panel as a token mismatch rather than as an outage: those need different fixes.
 
 ### Array capacities are a contract
 
-`model.rs` parses into `heapless::Vec`s whose capacities mirror `MAX_GROUPS`,
+`homelab-status/src/model.rs` parses into `heapless::Vec`s whose capacities mirror `MAX_GROUPS`,
 `MAX_DOWN` and `MAX_HOSTS` in the aggregator's `aggregate.py`.
 `serde-json-core` fails a parse outright when an array overruns, so raising a
 cap on the server without raising it here takes the screen down. Change both.

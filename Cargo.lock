@@ -329,6 +329,7 @@ version = "0.1.0"
 dependencies = [
  "desk-core",
  "embassy-executor",
+ "embassy-net",
  "embassy-sync 0.7.2",
  "embassy-time",
  "embedded-graphics",
@@ -338,8 +339,11 @@ dependencies = [
  "esp-bootloader-esp-idf",
  "esp-hal",
  "esp-println",
+ "esp-radio",
  "esp-rtos",
  "heapless 0.8.0",
+ "homelab-status",
+ "log",
  "static_cell",
 ]
 
@@ -1400,11 +1404,24 @@ dependencies = [
  "esp-radio",
  "esp-rtos",
  "heapless 0.8.0",
+ "homelab-status",
+ "log",
+ "static_cell",
+]
+
+[[package]]
+name = "homelab-status"
+version = "0.1.0"
+dependencies = [
+ "embassy-executor",
+ "embassy-net",
+ "embassy-time",
+ "esp-radio",
+ "heapless 0.8.0",
  "log",
  "reqwless",
  "serde",
  "serde-json-core",
- "static_cell",
 ]
 
 [[package]]

@@ -40,12 +40,8 @@ use esp_hal::{
 };
 use esp_println::println;
 use esp_radio::wifi::{Config as WifiCfg, ControllerConfig, sta::StationConfig};
-use homelab_display::{
-    bitbang_spi::BitBangSpi,
-    net::{self, BODY_MAX, FETCH_TIMEOUT, FetchError, SOCKET_TIMEOUT},
-    render, shtc3,
-    st7305::St7305,
-};
+use homelab_display::{bitbang_spi::BitBangSpi, render, shtc3, st7305::St7305};
+use homelab_status::net::{self, BODY_MAX, FETCH_TIMEOUT, FetchError, SOCKET_TIMEOUT};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -77,6 +73,8 @@ async fn main(spawner: Spawner) -> ! {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
     esp_alloc::heap_allocator!(size: 100 * 1024);
+    // homelab-status logs WiFi and fetch trouble through `log`.
+    esp_println::logger::init_logger(log::LevelFilter::Info);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sw_int = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);

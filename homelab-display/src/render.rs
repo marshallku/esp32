@@ -23,7 +23,9 @@ use embedded_graphics::{
 };
 use heapless::String;
 
-use crate::{model::Status, shtc3::Room};
+use homelab_status::model::Status;
+
+use crate::shtc3::Room;
 
 const W: i32 = crate::st7305::WIDTH as i32;
 const H: i32 = crate::st7305::HEIGHT as i32;

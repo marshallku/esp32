@@ -11,7 +11,7 @@ use embassy_net::{
     tcp::client::TcpClient,
 };
 use embassy_time::{Duration, Timer};
-use esp_println::println;
+use log::{info, warn};
 use esp_radio::wifi::{Interface as WifiInterface, WifiController};
 use reqwless::{
     client::HttpClient,
@@ -44,15 +44,15 @@ pub const fn status_url() -> &'static str {
 /// Keeps the station associated, reconnecting after a drop.
 #[embassy_executor::task]
 pub async fn connection(mut controller: WifiController<'static>) -> ! {
-    println!("WiFi connection task start");
+    info!("WiFi connection task start");
     loop {
         match controller.connect_async().await {
             Ok(info) => {
-                println!("WiFi connected: {:?}", info);
+                info!("WiFi connected: {:?}", info);
                 let info = controller.wait_for_disconnect_async().await.ok();
-                println!("WiFi disconnected: {:?}", info);
+                warn!("WiFi disconnected: {:?}", info);
             }
-            Err(e) => println!("WiFi connect failed: {:?}", e),
+            Err(e) => warn!("WiFi connect failed: {:?}", e),
         }
         Timer::after(Duration::from_millis(5000)).await;
     }
@@ -107,7 +107,7 @@ pub async fn fetch_status(
     let mut http = HttpClient::new(tcp_client, dns_client);
 
     let builder = http.request(Method::GET, STATUS_URL).await.map_err(|e| {
-        println!("status request error: {:?}", e);
+        warn!("status request error: {:?}", e);
         FetchError::Request
     })?;
     let mut request = builder.headers(&[
@@ -116,22 +116,22 @@ pub async fn fetch_status(
     ]);
 
     let response = request.send(rx_buf).await.map_err(|e| {
-        println!("status send error: {:?}", e);
+        warn!("status send error: {:?}", e);
         FetchError::NoResponse
     })?;
 
     let status = response.status;
     if status.0 == 401 || status.0 == 403 {
-        println!("status HTTP {} — token rejected", status.0);
+        warn!("status HTTP {} — token rejected", status.0);
         return Err(FetchError::Unauthorized);
     }
     if !status.is_successful() {
-        println!("status HTTP {}", status.0);
+        warn!("status HTTP {}", status.0);
         return Err(FetchError::Status);
     }
 
     let body = response.body().read_to_end().await.map_err(|e| {
-        println!("status body error: {:?}", e);
+        warn!("status body error: {:?}", e);
         // An outgrown document and a broken connection need different fixes —
         // raise BODY_MAX versus go look at the network — so they get different
         // messages. `read_to_end` reports the first as `BufferTooSmall`.
@@ -144,12 +144,12 @@ pub async fn fetch_status(
     // A body that exactly fills the buffer is indistinguishable from one that
     // was truncated at the limit, so treat it as oversized too.
     if body.len() >= BODY_MAX {
-        println!("status body filled the {}-byte buffer", BODY_MAX);
+        warn!("status body filled the {}-byte buffer", BODY_MAX);
         return Err(FetchError::TooLarge);
     }
 
     Status::parse(body).map_err(|e| {
-        println!("status parse error: {:?}", e);
+        warn!("status parse error: {:?}", e);
         FetchError::Parse
     })
 }
