@@ -44,6 +44,7 @@ use esp_hal::{
     i2c::master::{Config as I2cConfig, I2c},
     interrupt::{Priority, software::SoftwareInterruptControl},
     psram::{PsramConfig, PsramMode, SpiRamFreq},
+    system::Stack,
     time::Rate,
     timer::timg::TimerGroup,
 };
@@ -88,8 +89,9 @@ async fn main(spawner: Spawner) -> ! {
     esp_println::logger::init_logger(log::LevelFilter::Info);
     println!("=== {} ===", FW);
 
-    static RX_EXECUTOR: StaticCell<InterruptExecutor<1>> = StaticCell::new();
-    let rx_executor = RX_EXECUTOR.init(InterruptExecutor::new(sw.software_interrupt1));
+    // Software interrupt 1 is taken: esp-rtos starts the second core with it.
+    static RX_EXECUTOR: StaticCell<InterruptExecutor<2>> = StaticCell::new();
+    let rx_executor = RX_EXECUTOR.init(InterruptExecutor::new(sw.software_interrupt2));
     rx_executor.start(Priority::Priority2).spawn(link::rx_task(peripherals.UART0, peripherals.GPIO44).unwrap());
 
     let i2c = I2c::new(peripherals.I2C0, I2cConfig::default().with_frequency(Rate::from_khz(400)))
@@ -101,7 +103,15 @@ async fn main(spawner: Spawner) -> ! {
         println!("GT911 not answering: {:?} — touch disabled until it does", e);
     }
 
-    let mut display = Display::new(peripherals.LCD_CAM, peripherals.DMA_CH0, display_pins!(peripherals));
+    let (mut display, scanout) = Display::new(peripherals.LCD_CAM, peripherals.DMA_CH0, display_pins!(peripherals));
+    // The second core does nothing but keep the panel lit; see `scanout`.
+    static SCANOUT_STACK: StaticCell<Stack<8192>> = StaticCell::new();
+    esp_rtos::start_second_core(
+        peripherals.CPU_CTRL,
+        sw.software_interrupt1,
+        SCANOUT_STACK.init(Stack::new()),
+        move || scanout.run(),
+    );
 
     let station = WifiConfig::Station(StationConfig::default().with_ssid(SSID).with_password(PASSWORD.into()));
     let (controller, interfaces) =

@@ -1,25 +1,38 @@
-//! A DMA buffer that never ends: one frame in PSRAM, its descriptors chained
-//! into a ring.
+//! Keeping the RGB panel fed: one frame in PSRAM, sent from its first byte
+//! every single frame.
 //!
 //! An RGB panel has no memory of its own — it shows whatever is on the bus at
 //! the moment, so something has to clock a whole frame out ~45 times a second
-//! forever. Re-sending each frame from the CPU (what `panel-test` did first)
-//! works, but it pins a core to the job and stops the picture the moment
-//! anything else runs long. Chaining the last descriptor back to the first and
-//! setting the LCD's `next_frame_en` hands the loop to hardware instead: GDMA
-//! walks the ring and `lcd_cam` turns it into frames with no CPU involved.
+//! forever.
 //!
-//! This is the same shape esp-idf's RGB driver uses, minus its bounce buffers.
-//! It relies on the buffer being exactly one frame long, so the ring's seam
-//! always falls on a frame boundary. A FIFO underrun would break that and
-//! roll the picture, which is why `panel-test` loads PSRAM on purpose while
-//! scanning out.
+//! # Why every frame is restarted rather than looped in hardware
+//!
+//! The first version chained the last DMA descriptor back to the first and
+//! set the LCD's `next_frame_en`, so GDMA walked a ring with no CPU involved.
+//! It held still through a PSRAM stress test, then — once WiFi was running —
+//! the picture slid sideways and stayed there: the right edge of the screen
+//! drawn at the left. That is a FIFO underrun. When the PSRAM bus is busy
+//! (WiFi, flash, the CPU's own cache traffic) the LCD outruns the DMA for a
+//! moment and clocks out pixels it does not have; the ring keeps going from
+//! wherever it was, so every later frame starts at the wrong byte, forever.
+//! esp-idf has the same failure and the same remedy —
+//! `esp_lcd_rgb_panel_restart`, which ESPHome calls on every loop for this
+//! board.
+//!
+//! Here each frame is its own transfer from the start of the buffer, re-sent
+//! by `Scanout::run` the moment the previous one ends. An underrun can now
+//! spoil at most the one frame it happens in. The cost is a CPU core spinning
+//! on the LCD, which is why `run` is meant for the second core.
 
 use core::ptr::NonNull;
 
-use esp_hal::dma::{
-    BurstConfig, DmaDescriptor, DmaTxBuffer, ExternalBurstConfig, InternalBurstConfig, Owner,
-    Preparation, TransferDirection,
+use esp_hal::{
+    Blocking,
+    dma::{
+        BurstConfig, DmaDescriptor, DmaTxBuffer, ExternalBurstConfig, InternalBurstConfig, Owner, Preparation,
+        TransferDirection,
+    },
+    lcd_cam::lcd::dpi::Dpi,
 };
 
 /// Bytes per descriptor. The hardware ceiling is 4095; this is the largest
@@ -27,29 +40,32 @@ use esp_hal::dma::{
 /// starts burst-aligned.
 pub const CHUNK: usize = 4032;
 
-/// Descriptors needed to ring `len` bytes.
+/// Descriptors needed to chain `len` bytes.
 pub const fn descriptor_count(len: usize) -> usize {
     len.div_ceil(CHUNK)
 }
 
 const BURST: ExternalBurstConfig = ExternalBurstConfig::Size64;
 
-pub struct ScanoutBuf {
+pub struct FrameBuf {
     descriptors: &'static mut [DmaDescriptor],
-    frame: NonNull<u8>,
-    len: usize,
 }
 
-impl ScanoutBuf {
-    /// Links `descriptors` into a ring over `frame`.
+// SAFETY: the descriptors and the frame they point at are 'static and owned
+// by this value alone on the DMA side; moving it to the core that runs the
+// scanout loop moves that ownership with it.
+unsafe impl Send for FrameBuf {}
+
+impl FrameBuf {
+    /// Chains `descriptors` over `frame`, start to end.
     ///
     /// The caller keeps writing to the frame while the DMA reads it, which is
     /// the point, so this takes a raw pointer rather than a borrow.
     ///
     /// # Safety
     /// `frame` must point to one allocation of at least `len` bytes, 64-byte
-    /// aligned, in PSRAM, that is never freed — the ring keeps reading it for
-    /// as long as the transfer runs, which in practice is forever.
+    /// aligned, in PSRAM, that is never freed — the scanout reads it for as
+    /// long as the panel is on, which in practice is forever.
     ///
     /// # Panics
     /// If there are too few descriptors for `len`.
@@ -61,24 +77,23 @@ impl ScanoutBuf {
         for i in 0..count {
             let offset = i * CHUNK;
             let size = CHUNK.min(len - offset);
+            let last = i + 1 == count;
             let d = &mut descriptors[i];
             d.set_size(size);
             d.set_length(size);
             d.set_owner(Owner::Dma);
-            // No EOF anywhere: the ring has no end, and an EOF mid-stream
-            // would only raise an interrupt nobody handles.
-            d.set_suc_eof(false);
+            d.set_suc_eof(last);
             d.buffer = unsafe { frame.as_ptr().add(offset) };
-            d.next = unsafe { base.add((i + 1) % count) };
+            d.next = if last { core::ptr::null_mut() } else { unsafe { base.add(i + 1) } };
         }
 
-        Self { descriptors, frame, len }
+        Self { descriptors }
     }
 }
 
-unsafe impl DmaTxBuffer for ScanoutBuf {
-    type View = ScanoutBuf;
-    type Final = ScanoutBuf;
+unsafe impl DmaTxBuffer for FrameBuf {
+    type View = FrameBuf;
+    type Final = FrameBuf;
 
     fn prepare(&mut self) -> Preparation {
         Preparation {
@@ -86,8 +101,8 @@ unsafe impl DmaTxBuffer for ScanoutBuf {
             direction: TransferDirection::Out,
             accesses_psram: true,
             burst_transfer: BurstConfig { external_memory: BURST, internal_memory: InternalBurstConfig::Enabled },
-            // Owner bits are never handed back by software on a ring, so the
-            // DMA must not stop at a descriptor it thinks the CPU still owns.
+            // The same descriptors go out every frame and nothing hands owner
+            // bits back between sends, so the DMA must not insist on them.
             check_owner: Some(false),
             auto_write_back: false,
         }
@@ -102,9 +117,31 @@ unsafe impl DmaTxBuffer for ScanoutBuf {
     }
 }
 
-impl ScanoutBuf {
-    pub fn frame(&self) -> (NonNull<u8>, usize) {
-        (self.frame, self.len)
+/// The DPI bus and the frame it sends; `run` keeps the panel lit.
+pub struct Scanout {
+    dpi: Dpi<'static, Blocking>,
+    buf: FrameBuf,
+}
+
+impl Scanout {
+    pub fn new(dpi: Dpi<'static, Blocking>, buf: FrameBuf) -> Self {
+        Self { dpi, buf }
+    }
+
+    /// Sends the frame, waits for it to finish, sends it again — forever. A
+    /// transfer error is skipped over rather than fatal: the next frame
+    /// starts clean, which is the whole point of restarting every frame.
+    pub fn run(self) -> ! {
+        let Self { mut dpi, mut buf } = self;
+        loop {
+            match dpi.send(false, buf) {
+                Ok(transfer) => {
+                    let (_, d, b) = transfer.wait();
+                    (dpi, buf) = (d, b);
+                }
+                Err((_, d, b)) => (dpi, buf) = (d, b),
+            }
+        }
     }
 }
 

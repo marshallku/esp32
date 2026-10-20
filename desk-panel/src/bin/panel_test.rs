@@ -9,10 +9,9 @@
 //! - GT911 product ID: "911" means touch is wired and alive
 //! - backlight on but the screen stays black: ST7701 init or 3-wire SPI pins
 //! - colours or bars wrong: DPI data pins or timing
-//! - STRESS: the picture must hold still while PSRAM is hammered. The scanout
-//!   is a DMA ring with no CPU involved, so a FIFO underrun does not drop a
-//!   frame — it slides the whole picture sideways and it stays slid. A border
-//!   that has crept off the edge after this stage is that failure.
+//! - STRESS: the picture must hold still while PSRAM is hammered. Every frame
+//!   is restarted from the top of the buffer (see `scanout`), so an underrun
+//!   can spoil one frame but must never leave the border slid off the edge.
 //! - TOUCH: a dot follows the finger. A dot that lands mirrored or rotated
 //!   from the finger means the touch axes need swapping, not the panel.
 //!
@@ -37,12 +36,17 @@ use embedded_graphics::{
     text::{Baseline, Text},
 };
 use esp_backtrace as _;
+// The library carries the WiFi status client, so esp-radio ends up in this
+// binary's link even though it never touches the radio. Pulling esp-rtos in
+// supplies the scheduler symbols esp-radio references; nothing here starts it.
+use esp_rtos as _;
 use esp_hal::{
     clock::CpuClock,
     delay::Delay,
     i2c::master::{Config as I2cConfig, I2c},
     main,
     psram::{PsramConfig, PsramMode, SpiRamFreq},
+    system::{CpuControl, Stack},
     time::{Instant, Rate},
 };
 use esp_println::println;
@@ -81,8 +85,14 @@ fn main() -> ! {
         Err(e) => println!("2/4 GT911 not answering: {:?}", e),
     }
 
-    let mut display = Display::new(peripherals.LCD_CAM, peripherals.DMA_CH0, display_pins!(peripherals));
-    println!("3/4 scanout running from a DMA ring, CPU out of the loop");
+    let (mut display, scanout) = Display::new(peripherals.LCD_CAM, peripherals.DMA_CH0, display_pins!(peripherals));
+    static mut SCANOUT_STACK: Stack<8192> = Stack::new();
+    let mut cpu = CpuControl::new(peripherals.CPU_CTRL);
+    // Held for the life of the program: dropping the guard parks the core.
+    let _scanout_core = cpu
+        .start_app_core(unsafe { &mut *core::ptr::addr_of_mut!(SCANOUT_STACK) }, move || scanout.run())
+        .expect("second core start");
+    println!("3/4 scanout running on the second core, restarted every frame");
 
     let style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
     let fills: [(&str, Rgb565); 3] = [("RED", Rgb565::RED), ("GREEN", Rgb565::GREEN), ("BLUE", Rgb565::BLUE)];

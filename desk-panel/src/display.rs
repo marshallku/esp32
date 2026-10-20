@@ -1,5 +1,8 @@
-//! The 4848S040's panel as one object: ST7701 init, the DPI bus, and a
-//! hardware-driven scanout of a PSRAM frame.
+//! The 4848S040's panel: ST7701 init, the DPI bus, and the PSRAM frames.
+//!
+//! `Display::new` returns the drawing side and a `Scanout` that must be run
+//! for the panel to show anything — see `scanout` for why it is a loop on a
+//! core rather than a DMA ring.
 //!
 //! Drawing goes to a back buffer and `present` copies it to the front in one
 //! pass. Drawing straight into the scanned-out frame would show every
@@ -9,14 +12,13 @@
 use core::ptr::NonNull;
 
 use esp_hal::{
-    Blocking,
     dma::DmaDescriptor,
     gpio::{Level, Output, OutputConfig},
     lcd_cam::{
         LcdCam,
         lcd::{
             ClockMode, Phase, Polarity,
-            dpi::{Config as DpiConfig, Dpi, DpiTransfer, Format, FrameTiming},
+            dpi::{Config as DpiConfig, Dpi, Format, FrameTiming},
         },
     },
     peripherals::{self, DMA_CH0, LCD_CAM},
@@ -25,7 +27,7 @@ use esp_hal::{
 
 use crate::{
     framebuffer::{self, Framebuffer, HEIGHT, WIDTH},
-    scanout::{self, ScanoutBuf},
+    scanout::{self, FrameBuf, Scanout},
     st7701::St7701,
 };
 
@@ -76,21 +78,19 @@ pub struct Pins {
 }
 
 pub struct Display {
-    // Held, never read: dropping the transfer stops the scanout.
-    _scanout: DpiTransfer<'static, ScanoutBuf, Blocking>,
     _backlight: Output<'static>,
     front: NonNull<u8>,
     back: &'static mut [u8],
 }
 
 impl Display {
-    /// Brings the panel up and starts scanning out a black frame. Needs the
-    /// PSRAM heap to be in place already: both frames live there.
+    /// Brings the panel up. Nothing shows until the returned `Scanout` runs.
+    /// Needs the PSRAM heap in place already: both frames live there.
     ///
     /// # Panics
     /// If PSRAM cannot hold two frames or the DPI config is rejected — both
     /// mean the board is not the one this was written for.
-    pub fn new(lcd_cam: LCD_CAM<'static>, dma: DMA_CH0<'static>, pins: Pins) -> Self {
+    pub fn new(lcd_cam: LCD_CAM<'static>, dma: DMA_CH0<'static>, pins: Pins) -> (Self, Scanout) {
         let out = OutputConfig::default();
         let backlight = Output::new(pins.backlight, Level::High, out);
         St7701::new(
@@ -105,14 +105,14 @@ impl Display {
 
         const DESCRIPTORS: usize = scanout::descriptor_count(framebuffer::BYTES);
         let descriptors = {
-            static mut RING: [DmaDescriptor; DESCRIPTORS] = [DmaDescriptor::EMPTY; DESCRIPTORS];
+            static mut CHAIN: [DmaDescriptor; DESCRIPTORS] = [DmaDescriptor::EMPTY; DESCRIPTORS];
             // Taken exactly once: `Display` owns LCD_CAM, which is a
             // singleton, so a second `new` cannot be reached.
-            unsafe { &mut *core::ptr::addr_of_mut!(RING) }
+            unsafe { &mut *core::ptr::addr_of_mut!(CHAIN) }
         };
         // SAFETY: `front` is a leaked, 64-byte-aligned, frame-sized PSRAM
         // allocation from `alloc_frame`, so it outlives the scanout.
-        let buf = unsafe { ScanoutBuf::new(descriptors, front, framebuffer::BYTES) };
+        let buf = unsafe { FrameBuf::new(descriptors, front, framebuffer::BYTES) };
 
         let config = DpiConfig::default()
             .with_frequency(Rate::from_mhz(PCLK_MHZ))
@@ -158,11 +158,7 @@ impl Display {
             .with_data14(pins.r.3)
             .with_data15(pins.r.4);
 
-        // `next_frame_en`: the LCD starts the next frame as soon as one ends,
-        // pulling from the same ring. From here on the CPU is out of the loop.
-        let scanout = dpi.send(true, buf).unwrap_or_else(|(e, _, _)| panic!("scanout start failed: {:?}", e));
-
-        Self { _scanout: scanout, _backlight: backlight, front, back }
+        (Self { _backlight: backlight, front, back }, Scanout::new(dpi, buf))
     }
 
     /// The back buffer, to draw the next frame into.
@@ -172,7 +168,7 @@ impl Display {
 
     /// Shows the back buffer. Copies the whole frame (~10 ms PSRAM to PSRAM)
     /// and flushes it out of the cache; the copy is fast enough to land
-    /// within about one scanout, so a page change tears for at most one frame.
+    /// within about one frame, so a page change tears for at most one frame.
     pub fn present(&mut self) {
         let front = unsafe { core::slice::from_raw_parts_mut(self.front.as_ptr(), framebuffer::BYTES) };
         front.copy_from_slice(self.back);
