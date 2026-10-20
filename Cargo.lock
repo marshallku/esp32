@@ -316,6 +316,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "desk-panel"
+version = "0.1.0"
+dependencies = [
+ "embedded-graphics",
+ "esp-alloc",
+ "esp-backtrace",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
