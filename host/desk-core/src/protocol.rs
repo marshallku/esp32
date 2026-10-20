@@ -1,0 +1,182 @@
+//! Line-oriented JSON over the board's one serial port.
+//!
+//! The UART also carries esp-println logs and the ROM's boot chatter, so the
+//! device prefixes every protocol line with `@` and the host ignores anything
+//! else. The host sends bare JSON: nothing else talks to the device's RX.
+//!
+//! Flow control is stop-and-wait: the device answers every host line with
+//! `ack`, and the host sends nothing more until it arrives. A line is at most
+//! `MAX_LINE` bytes, which the device's RX ring always has room for, so a burst
+//! can never outrun it while it is busy drawing.
+//!
+//! Layouts are versioned by `gen`. A replacement arrives as `begin`, one
+//! `page` per page, then `commit`; the device swaps only on a complete commit,
+//! and every `press` echoes the gen it was made against, so a press on the old
+//! layout cannot run whatever now sits at the same position.
+
+use alloc::{string::String, vec::Vec};
+
+use serde::{Deserialize, Serialize};
+
+/// Bumped on any incompatible change. `hello` carries it both ways and the
+/// host refuses a device that disagrees.
+pub const PROTO: u16 = 1;
+
+/// Longest line either side may send, newline included. Sized so a full page
+/// of keys at the label caps in `text` fits even when every character needs a
+/// JSON escape (see the test below).
+pub const MAX_LINE: usize = 2048;
+
+pub const MAX_PAGES: usize = 8;
+pub const KEYS_PER_PAGE: usize = 9;
+pub const MAX_BUTTONS: usize = 3;
+
+/// Device-to-host lines start with this; anything else on the wire is a log.
+pub const DEVICE_PREFIX: char = '@';
+
+/// One key as drawn. Colours are 0xRRGGBB.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Key {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sub: String,
+    pub bg: u32,
+    pub fg: u32,
+    /// A toggle in its active state. Drawn inverted with an accent bar, so it
+    /// reads as "on" without relying on the colour the user picked.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub on: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Dir {
+    Left,
+    Right,
+}
+
+/// A finished touch, as the gesture recogniser reports it and as the host can
+/// inject it for testing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "g", rename_all = "snake_case")]
+pub enum Gesture {
+    Tap { x: u16, y: u16 },
+    Long { x: u16, y: u16 },
+    Swipe { dir: Dir },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+pub enum HostMsg {
+    Hello { proto: u16 },
+    Ping,
+    Begin { generation: u32, pages: u8 },
+    Page { generation: u32, index: u8, keys: Vec<Key> },
+    Commit { generation: u32 },
+    /// Live update of one key in the active layout.
+    Key { generation: u32, page: u8, index: u8, key: Key },
+    /// `None` is the dashboard.
+    Goto { page: Option<u8> },
+    /// Wall-clock text for the status strip; the board has no clock of its own.
+    Time { text: String },
+    /// A modal that takes over the screen until answered or dismissed.
+    Prompt { id: u64, title: String, body: String, buttons: Vec<String> },
+    Dismiss { id: u64 },
+    /// Test hook: behave as if this gesture had just been made on the glass.
+    Inject { gesture: Gesture },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+pub enum DeviceMsg {
+    Hello { proto: u16, fw: String },
+    Ack,
+    Pong,
+    Press { generation: u32, page: u8, index: u8, long: bool },
+    Answer { id: u64, button: u8 },
+    /// The screen now showing; `None` is the dashboard.
+    Screen { page: Option<u8> },
+    Err { msg: String },
+}
+
+/// `msg` as one device line, prefix and newline included.
+pub fn encode_device(msg: &DeviceMsg) -> String {
+    let mut line = String::from(DEVICE_PREFIX);
+    line.push_str(&serde_json::to_string(msg).expect("protocol types always serialise"));
+    line.push('\n');
+    line
+}
+
+/// `msg` as one host line, newline included.
+pub fn encode_host(msg: &HostMsg) -> String {
+    let mut line = serde_json::to_string(msg).expect("protocol types always serialise");
+    line.push('\n');
+    line
+}
+
+/// One line from the device. `None` for log lines and boot noise; the host
+/// should pass those through to its own log rather than treat them as errors.
+///
+/// A protocol line can arrive glued to the tail of a truncated boot log line
+/// — seen on hardware right after a reset — so the message is taken from the
+/// first `@{` anywhere in the line, not only at its start.
+pub fn decode_device(line: &str) -> Option<Result<DeviceMsg, serde_json::Error>> {
+    let line = line.trim_end_matches(['\r', '\n']);
+    let start = line.find("@{")?;
+    Some(serde_json::from_str(&line[start + DEVICE_PREFIX.len_utf8()..]))
+}
+
+pub fn decode_host(line: &str) -> Result<HostMsg, serde_json::Error> {
+    serde_json::from_str(line.trim_end_matches(['\r', '\n']))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+
+    use super::*;
+
+    #[test]
+    fn worst_case_page_fits_one_line() {
+        use crate::text::{LABEL_MAX, SUB_MAX};
+        // Every character a quote: each costs two bytes once escaped.
+        let full_page = HostMsg::Page {
+            generation: u32::MAX,
+            index: u8::MAX,
+            keys: vec![
+                Key { label: "\"".repeat(LABEL_MAX), sub: "\\".repeat(SUB_MAX), bg: 0xFFFFFF, fg: 0xFFFFFF, on: true };
+                KEYS_PER_PAGE
+            ],
+        };
+        let line = encode_host(&full_page);
+        // A worst-case page has to fit one line, or the stop-and-wait framing
+        // breaks for exactly the messages that matter most.
+        assert!(line.len() <= MAX_LINE, "full page is {} bytes", line.len());
+        assert_eq!(decode_host(&line).unwrap(), full_page);
+    }
+
+    #[test]
+    fn device_lines_are_prefixed_and_logs_are_skipped() {
+        let msg = DeviceMsg::Press { generation: 3, page: 1, index: 4, long: false };
+        let line = encode_device(&msg);
+        assert!(line.starts_with('@') && line.ends_with('\n'));
+        assert_eq!(decode_device(&line).unwrap().unwrap(), msg);
+        assert!(decode_device("I (157) boot: Loaded app\r\n").is_none());
+        assert!(decode_device("user@host: ok").is_none(), "a bare @ is not a message");
+        let glued = alloc::format!("rst:0x1 (POWE{line}");
+        assert_eq!(decode_device(&glued).unwrap().unwrap(), msg);
+    }
+
+    #[test]
+    fn large_ids_survive_json() {
+        let msg = HostMsg::Dismiss { id: u64::MAX };
+        assert_eq!(decode_host(&encode_host(&msg)).unwrap(), msg);
+    }
+
+    #[test]
+    fn optional_key_fields_default() {
+        let key: Key = serde_json::from_str(r#"{"label":"A","bg":0,"fg":16777215}"#).unwrap();
+        assert_eq!(key.sub, "");
+        assert!(!key.on);
+    }
+}

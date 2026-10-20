@@ -4,6 +4,10 @@ name         = "desk-panel"
 rust-version = "1.88"
 version      = "0.1.0"
 
+[[bin]]
+name = "desk-panel"
+path = "./src/bin/main.rs"
+
 # Bring-up diagnostic: drives the RGB panel only, so a blank or garbled screen
 # can be blamed on PSRAM, the ST7701 init or the DPI timing before there is an
 # application to suspect as well.
@@ -23,3 +27,12 @@ esp-alloc = "0.10.0"
 
 embedded-graphics = "0.8.1"
 embedded-hal      = "1.0.0"
+
+desk-core = { path = "../host/desk-core" }
+heapless  = "0.8.0"
+
+embassy-executor = "0.10.0"
+embassy-sync     = "0.7.2"
+embassy-time     = "0.5.0"
+esp-rtos         = { version = "0.3.0", features = ["esp32s3", "embassy", "log-04"] }
+static_cell      = "2.1.0"

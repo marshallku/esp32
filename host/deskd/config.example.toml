@@ -1,0 +1,93 @@
+# deskd profile — copy to ~/.config/deskd/config.toml, then `deskd check`.
+#
+# Up to 8 pages of up to 9 keys (3x3, row-major from the top left). Swiping
+# left from the dashboard opens page 0. Labels are ASCII only: the panel's
+# font has no other glyphs. Colours are "#rrggbb".
+#
+# Actions:
+#   { type = "shell", cmd = "..." }                 sh -c, detached
+#   { type = "keys", mods = "CTRL SHIFT", key = "T" }  shortcut to the focused window (Hyprland)
+#   { type = "media", cmd = "play-pause" }          playerctl: play-pause | next | previous | stop
+#   { type = "volume", step = 5 }                   default output, percent (negative lowers)
+#   { type = "mute" }                               toggle default output mute
+#   { type = "mic-mute" }                           toggle default input mute
+#   { type = "page", index = 1 }                    switch to another page
+#   { type = "dashboard" }                          switch to the dashboard
+#
+# Live states a key can show with `state = "..."` (drawn inverted while true,
+# with label_on / sub_on if given): "mic-muted", "muted".
+
+[[page]]
+name = "main"
+
+[[page.key]]
+label = "Mic"
+sub = "live"
+sub_on = "MUTED"
+color = "#2d5a3d"
+state = "mic-muted"
+action = { type = "mic-mute" }
+
+[[page.key]]
+label = "Vol -"
+color = "#2a3f5f"
+action = { type = "volume", step = -5 }
+
+[[page.key]]
+label = "Vol +"
+color = "#2a3f5f"
+action = { type = "volume", step = 5 }
+
+[[page.key]]
+label = "Prev"
+color = "#4a3a5e"
+action = { type = "media", cmd = "previous" }
+
+[[page.key]]
+label = "Play"
+sub = "pause"
+color = "#4a3a5e"
+action = { type = "media", cmd = "play-pause" }
+
+[[page.key]]
+label = "Next"
+color = "#4a3a5e"
+action = { type = "media", cmd = "next" }
+
+[[page.key]]
+label = "Terminal"
+color = "#333333"
+action = { type = "shell", cmd = "kitty" }
+
+[[page.key]]
+label = "Screenshot"
+sub = "region"
+color = "#333333"
+action = { type = "shell", cmd = "grim -g \"$(slurp)\" - | wl-copy" }
+
+[[page.key]]
+label = "More"
+color = "#5e4a2a"
+action = { type = "page", index = 1 }
+
+[[page]]
+name = "more"
+
+[[page.key]]
+label = "Speaker"
+sub = "on"
+sub_on = "MUTED"
+color = "#2d5a3d"
+state = "muted"
+action = { type = "mute" }
+
+[[page.key]]
+label = "Back"
+color = "#5e4a2a"
+action = { type = "page", index = 0 }
+
+[[page.key]]
+label = "Home"
+sub = "dashboard"
+color = "#5e4a2a"
+action = { type = "dashboard" }

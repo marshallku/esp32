@@ -1,0 +1,5 @@
+# The repository root's config targets the ESP32-S3. Cargo merges configs
+# from the working directory upwards, so this one overrides the target for
+# anything built from host/ — the daemon and desk-core's tests run on the PC.
+[build]
+target = "x86_64-unknown-linux-gnu"

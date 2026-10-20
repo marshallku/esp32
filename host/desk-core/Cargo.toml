@@ -1,0 +1,12 @@
+[package]
+edition = "2024"
+name    = "desk-core"
+version = "0.1.0"
+
+# Shared by the firmware (xtensa, no_std + alloc) and deskd (PC). It lives in
+# host/ so its tests run on the PC toolchain; the firmware takes it as a path
+# dependency.
+
+[dependencies]
+serde      = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }

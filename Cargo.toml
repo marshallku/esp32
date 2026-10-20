@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["desk-panel", "homelab-display", "scd41-monitor"]
+# The PC side (daemon + shared desk-core) is its own workspace on the host
+# toolchain; see host/.cargo/config.toml.
+exclude = ["host"]
 
 # Profiles must live at the workspace root in a Cargo workspace.
 # For fine tuning, see https://doc.rust-lang.org/cargo/reference/profiles.html

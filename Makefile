@@ -10,7 +10,7 @@ ESPENV := . $$HOME/.cargo/env-esp.sh; \
   if [ -f .env ]; then set -a; . ./.env; set +a; fi; \
   if [ -f .env.$(LOCATION) ]; then set -a; . ./.env.$(LOCATION); set +a; fi;
 
-.PHONY: help build flash run monitor reset info release clean
+.PHONY: help build flash run monitor reset info release clean host-test host-build
 
 help:
 	@echo "ESP32-S3 monorepo workspace — usage:"
@@ -23,6 +23,8 @@ help:
 	@echo "  make info             칩 정보 출력"
 	@echo "  make release [PKG=]   release profile 빌드"
 	@echo "  make clean            cargo clean (workspace 전체)"
+	@echo "  make host-test        desk-core + deskd 테스트 (PC 툴체인)"
+	@echo "  make host-build       deskd release 빌드 → host/target/x86_64-unknown-linux-gnu/release/deskd"
 	@echo ""
 	@echo "현재 기본 패키지: $(PKG)"
 	@echo "현재 기본 바이너리: $(BIN)"
@@ -63,3 +65,12 @@ info:
 
 clean:
 	cargo clean
+
+# The PC side lives in its own workspace and must be built from inside host/:
+# cargo picks its config by working directory, and from here it would target
+# the ESP32-S3.
+host-test:
+	cd host && cargo test
+
+host-build:
+	cd host && cargo build --release -p deskd
