@@ -24,7 +24,7 @@ use crate::{
     config,
     control::Request,
     deck::Deck,
-    serial,
+    obs, serial,
 };
 
 const ACK_TIMEOUT: Duration = Duration::from_secs(1);
@@ -41,41 +41,51 @@ pub enum Event {
 
 /// Waits for the panel, runs a session, and starts over when it ends. Never
 /// returns: deskd's job is to be there whenever the board is.
-pub async fn run(mut deck: Deck, config_path: PathBuf, mut events: mpsc::Receiver<Event>) -> ! {
+pub async fn run(
+    mut deck: Deck,
+    config_path: PathBuf,
+    mut events: mpsc::Receiver<Event>,
+    obs: Option<obs::Handle>,
+) -> ! {
     loop {
         let Some(path) = serial::find() else {
-            idle(&mut events, "panel not plugged in").await;
+            idle(&mut deck, &mut events, "panel not plugged in").await;
             continue;
         };
         let (port, lines) = match serial::open(&path) {
             Ok(opened) => opened,
             Err(e) => {
                 eprintln!("{e:#}");
-                idle(&mut events, "panel port could not be opened").await;
+                idle(&mut deck, &mut events, "panel port could not be opened").await;
                 continue;
             }
         };
         eprintln!("panel port {} open", path.display());
-        let mut session = Session::new(port);
+        let mut session = Session::new(port, obs.clone());
         let reason = session.run(&mut deck, &config_path, &mut events, lines).await;
         eprintln!("session ended: {reason:#}");
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
-/// One second of answering control requests while there is no panel, so a
-/// `deskd ctl status` gets a reply instead of hanging.
-async fn idle(events: &mut mpsc::Receiver<Event>, why: &str) {
+/// One second without a panel: state values are still recorded — OBS answers
+/// its initial queries whether or not the panel is plugged in, and they go
+/// out with the next push — and control requests get a reply instead of
+/// hanging.
+async fn idle(deck: &mut Deck, events: &mut mpsc::Receiver<Event>, why: &str) {
     let deadline = tokio::time::sleep(Duration::from_secs(1));
     tokio::pin!(deadline);
     loop {
         tokio::select! {
             _ = &mut deadline => return,
-            Some(ev) = events.recv() => {
-                if let Event::Control(_, reply) = ev {
+            Some(ev) = events.recv() => match ev {
+                Event::State(name, value) => {
+                    deck.set_state(&name, value);
+                }
+                Event::Control(_, reply) => {
                     let _ = reply.send(json!({ "ok": false, "connected": false, "error": why }));
                 }
-            }
+            },
         }
     }
 }
@@ -90,6 +100,7 @@ struct Session {
     /// Set once the panel has answered `hello` with our protocol version.
     fw: Option<String>,
     screen: Option<u8>,
+    obs: Option<obs::Handle>,
 }
 
 struct InFlight {
@@ -99,7 +110,7 @@ struct InFlight {
 }
 
 impl Session {
-    fn new(port: File) -> Self {
+    fn new(port: File, obs: Option<obs::Handle>) -> Self {
         let now = Instant::now();
         Self {
             port,
@@ -110,6 +121,7 @@ impl Session {
             clock: String::new(),
             fw: None,
             screen: None,
+            obs,
         }
     }
 
@@ -186,6 +198,10 @@ impl Session {
                     match action.effect() {
                         Effect::Run(argv) => actions::spawn(argv),
                         Effect::Goto(page) => self.outbox.push_back(HostMsg::Goto { page }),
+                        Effect::Obs(cmd) => match &self.obs {
+                            Some(obs) => obs.send(cmd),
+                            None => eprintln!("OBS key pressed but OBS support is not running"),
+                        },
                     }
                 }
                 None => eprintln!("ignored press {page}/{index} against stale generation {generation}"),
@@ -214,6 +230,7 @@ impl Session {
                         "fw": self.fw,
                         "screen": self.screen,
                     }),
+                    Request::States => json!({ "ok": true, "states": deck.states() }),
                     Request::Inject { gesture } if self.fw.is_some() => {
                         self.outbox.push_back(HostMsg::Inject { gesture });
                         json!({ "ok": true })

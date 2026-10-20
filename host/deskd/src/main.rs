@@ -13,6 +13,7 @@ mod actions;
 mod config;
 mod control;
 mod deck;
+mod obs;
 mod serial;
 mod session;
 mod states;
@@ -48,12 +49,20 @@ async fn main() -> Result<()> {
 
 async fn run() -> Result<()> {
     let config_path = config::default_path();
-    let deck = deck::Deck::new(config::load(&config_path)?);
+    let config = config::load(&config_path)?;
     let (events_tx, events_rx) = mpsc::channel(64);
 
+    // Started only if some key uses OBS. Inputs are taken from the config at
+    // startup; a reload that adds new OBS inputs needs a restart to track them.
+    let obs = config.uses_obs().then(|| {
+        let machine = obs::Machine::new(obs::password(&config.obs.password_env), config.obs_inputs());
+        obs::spawn(config.obs.url.clone(), machine, events_tx.clone())
+    });
+
+    let deck = deck::Deck::new(config);
     tokio::spawn(states::poll_audio(events_tx.clone()));
     let control = tokio::spawn(control::serve(events_tx));
-    let session = tokio::spawn(session::run(deck, config_path, events_rx));
+    let session = tokio::spawn(session::run(deck, config_path, events_rx, obs));
 
     tokio::select! {
         result = control => result?.context("control socket"),

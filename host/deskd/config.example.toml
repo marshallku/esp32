@@ -13,9 +13,23 @@
 #   { type = "mic-mute" }                           toggle default input mute
 #   { type = "page", index = 1 }                    switch to another page
 #   { type = "dashboard" }                          switch to the dashboard
+#   { type = "obs-scene", scene = "Desk" }          OBS: switch program scene
+#   { type = "obs-record" }                         OBS: start/stop recording
+#   { type = "obs-stream" }                         OBS: start/stop streaming
+#   { type = "obs-mute", input = "Mic/Aux" }        OBS: toggle an input's mute
 #
 # Live states a key can show with `state = "..."` (drawn inverted while true,
-# with label_on / sub_on if given): "mic-muted", "muted".
+# with label_on / sub_on if given):
+#   "mic-muted", "muted"                            PipeWire default input / output
+#   "obs-connected", "obs-recording", "obs-streaming"
+#   "obs-scene:<scene>"                             true while it is the program scene
+#   "obs-muted:<input>"
+#
+# OBS is only contacted when some key uses it. The obs-websocket password is
+# read from $OBS_WEBSOCKET_PASSWORD, or else from OBS's own config, so it
+# normally needs no setup. Override the address with:
+#   [obs]
+#   url = "ws://127.0.0.1:4455"
 
 [[page]]
 name = "main"
@@ -66,9 +80,66 @@ color = "#333333"
 action = { type = "shell", cmd = "grim -g \"$(slurp)\" - | wl-copy" }
 
 [[page.key]]
-label = "More"
+label = "OBS"
 color = "#5e4a2a"
 action = { type = "page", index = 1 }
+
+[[page]]
+name = "obs"
+
+[[page.key]]
+label = "Scene"
+color = "#2a3f5f"
+state = "obs-scene:Scene"
+action = { type = "obs-scene", scene = "Scene" }
+
+[[page.key]]
+label = "Scene 2"
+color = "#2a3f5f"
+state = "obs-scene:Scene 2"
+action = { type = "obs-scene", scene = "Scene 2" }
+
+[[page.key]]
+label = "OBS Mic"
+sub = "live"
+sub_on = "MUTED"
+color = "#2d5a3d"
+state = "obs-muted:Mic/Aux"
+action = { type = "obs-mute", input = "Mic/Aux" }
+
+[[page.key]]
+label = "REC"
+sub = "start"
+sub_on = "recording"
+color = "#6a2a2a"
+state = "obs-recording"
+action = { type = "obs-record" }
+
+[[page.key]]
+label = "LIVE"
+sub = "start"
+sub_on = "streaming"
+color = "#6a2a2a"
+state = "obs-streaming"
+action = { type = "obs-stream" }
+
+[[page.key]]
+label = "OBS"
+sub = "offline"
+sub_on = "connected"
+color = "#333333"
+state = "obs-connected"
+action = { type = "shell", cmd = "obs" }
+
+[[page.key]]
+label = "Back"
+color = "#5e4a2a"
+action = { type = "page", index = 0 }
+
+[[page.key]]
+label = "More"
+color = "#5e4a2a"
+action = { type = "page", index = 2 }
 
 [[page]]
 name = "more"
@@ -84,7 +155,7 @@ action = { type = "mute" }
 [[page.key]]
 label = "Back"
 color = "#5e4a2a"
-action = { type = "page", index = 0 }
+action = { type = "page", index = 1 }
 
 [[page.key]]
 label = "Home"

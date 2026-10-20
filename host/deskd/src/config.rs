@@ -17,8 +17,26 @@ use crate::{actions::Action, states};
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Optional; OBS keys work with the defaults.
+    #[serde(default)]
+    pub obs: ObsConfig,
     #[serde(rename = "page")]
     pub pages: Vec<Page>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ObsConfig {
+    pub url: String,
+    /// Environment variable holding the password. When unset, deskd reads it
+    /// from OBS's own obs-websocket config.
+    pub password_env: String,
+}
+
+impl Default for ObsConfig {
+    fn default() -> Self {
+        Self { url: "ws://127.0.0.1:4455".into(), password_env: "OBS_WEBSOCKET_PASSWORD".into() }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,9 +110,16 @@ pub fn parse(text: &str) -> Result<Config> {
                 }
             }
             if let Some(state) = &key.state
-                && !states::NAMES.contains(&state.as_str())
+                && !states::is_known(state)
             {
-                bail!("key '{}': unknown state '{}', expected one of {:?}", key.label, state, states::NAMES);
+                bail!(
+                    "key '{}': unknown state '{}', expected one of {:?} or {}<scene> / {}<input>",
+                    key.label,
+                    state,
+                    states::NAMES,
+                    states::OBS_SCENE,
+                    states::OBS_MUTED
+                );
             }
             key.action.validate(config.pages.len()).with_context(|| format!("key '{}'", key.label))?;
             for label in [Some(&key.label), key.label_on.as_ref()].into_iter().flatten() {
@@ -132,6 +157,28 @@ fn worst_case_page(page: &Page) -> HostMsg {
         .map(|k| Key { label: longer(&k.label, &k.label_on), sub: longer(&k.sub, &k.sub_on), bg: 0xFFFFFF, fg: 0xFFFFFF, on: true })
         .collect();
     HostMsg::Page { generation: u32::MAX, index: u8::MAX, keys }
+}
+
+impl Config {
+    fn keys(&self) -> impl Iterator<Item = &KeyConfig> {
+        self.pages.iter().flat_map(|p| &p.keys)
+    }
+
+    /// Whether any key needs OBS, so deskd only connects when it is used.
+    pub fn uses_obs(&self) -> bool {
+        self.keys().any(|k| k.action.uses_obs() || k.state.as_deref().is_some_and(|s| s.starts_with("obs-")))
+    }
+
+    /// OBS inputs whose mute state a key shows or toggles.
+    pub fn obs_inputs(&self) -> std::collections::BTreeSet<String> {
+        self.keys()
+            .filter_map(|k| match (&k.action, k.state.as_deref().and_then(|s| s.strip_prefix(states::OBS_MUTED))) {
+                (_, Some(input)) => Some(input.to_string()),
+                (Action::ObsMute { input }, None) => Some(input.clone()),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 pub fn parse_color(s: &str) -> Result<u32> {

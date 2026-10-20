@@ -12,8 +12,17 @@ use crate::{
 
 const POLL: Duration = Duration::from_millis(700);
 
-/// Names a key's `state` can refer to.
-pub const NAMES: &[&str] = &["mic-muted", "muted"];
+/// Fixed names a key's `state` can refer to. OBS adds per-scene and
+/// per-input names on top; see `is_known`.
+pub const NAMES: &[&str] = &["mic-muted", "muted", "obs-connected", "obs-recording", "obs-streaming"];
+
+pub const OBS_SCENE: &str = "obs-scene:";
+pub const OBS_MUTED: &str = "obs-muted:";
+
+pub fn is_known(name: &str) -> bool {
+    NAMES.contains(&name)
+        || [OBS_SCENE, OBS_MUTED].iter().any(|p| name.strip_prefix(p).is_some_and(|rest| !rest.is_empty()))
+}
 
 pub async fn poll_audio(events: mpsc::Sender<Event>) {
     let mut tick = tokio::time::interval(POLL);
@@ -47,6 +56,14 @@ fn parse_muted(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn obs_state_names_need_a_subject() {
+        assert!(is_known("obs-scene:Desk"));
+        assert!(is_known("obs-recording"));
+        assert!(!is_known("obs-scene:"));
+        assert!(!is_known("cpu-hot"));
+    }
 
     #[test]
     fn reads_wpctl_mute_flag() {

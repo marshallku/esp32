@@ -46,6 +46,10 @@ impl Deck {
         msgs
     }
 
+    pub fn states(&self) -> &HashMap<String, bool> {
+        &self.states
+    }
+
     /// Replaces the profile (config reload). The caller pushes afterwards.
     pub fn replace(&mut self, config: Config) {
         self.config = config;

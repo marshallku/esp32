@@ -23,6 +23,8 @@ use crate::session::Event;
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     Status,
+    /// Every live state value deskd knows, as keys would show them.
+    States,
     Inject { gesture: Gesture },
     Reload,
 }

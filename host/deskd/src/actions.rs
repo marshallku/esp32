@@ -7,6 +7,8 @@
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
+use crate::obs;
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Action {
@@ -30,6 +32,14 @@ pub enum Action {
     Page { index: u8 },
     /// Switch the panel to the dashboard.
     Dashboard,
+    /// OBS: switch the program scene.
+    ObsScene { scene: String },
+    /// OBS: start or stop recording.
+    ObsRecord,
+    /// OBS: start or stop streaming.
+    ObsStream,
+    /// OBS: toggle an audio input's mute (the source name as shown in OBS).
+    ObsMute { input: String },
 }
 
 /// What deskd does about a press, beyond running a command.
@@ -37,6 +47,7 @@ pub enum Action {
 pub enum Effect {
     Run(Vec<String>),
     Goto(Option<u8>),
+    Obs(obs::Command),
 }
 
 const MEDIA_COMMANDS: &[&str] = &["play-pause", "next", "previous", "stop"];
@@ -61,6 +72,10 @@ impl Action {
         Ok(())
     }
 
+    pub fn uses_obs(&self) -> bool {
+        matches!(self, Action::ObsScene { .. } | Action::ObsRecord | Action::ObsStream | Action::ObsMute { .. })
+    }
+
     pub fn effect(&self) -> Effect {
         let run = |args: &[&str]| Effect::Run(args.iter().map(|s| s.to_string()).collect());
         match self {
@@ -78,6 +93,10 @@ impl Action {
             Action::MicMute => run(&["wpctl", "set-mute", SOURCE, "toggle"]),
             Action::Page { index } => Effect::Goto(Some(*index)),
             Action::Dashboard => Effect::Goto(None),
+            Action::ObsScene { scene } => Effect::Obs(obs::Command::Scene(scene.clone())),
+            Action::ObsRecord => Effect::Obs(obs::Command::ToggleRecord),
+            Action::ObsStream => Effect::Obs(obs::Command::ToggleStream),
+            Action::ObsMute { input } => Effect::Obs(obs::Command::ToggleMute(input.clone())),
         }
     }
 }
