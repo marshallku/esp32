@@ -1,0 +1,13 @@
+[Unit]
+Description=deskd - desk panel daemon (Stream-Deck-style control surface)
+# Hyprland key actions need the compositor's environment.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/deskd
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

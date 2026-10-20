@@ -2,12 +2,14 @@
 
 Rust `no_std` firmware (esp-hal) for the ESP32-S3 boards in the homelab. One
 Cargo workspace, one Xtensa toolchain, one Makefile; each board is a workspace
-member.
+member. `host/` is a separate workspace for the PC side of `desk-panel`.
 
 | Package | Board | Does |
 | --- | --- | --- |
 | `scd41-monitor` | ESP32-S3 DevKitC + SCD41 + SSD1306 | Room CO₂/temp/humidity and LD2410 presence → InfluxDB, with a 0.96" OLED readout. Deployed per room (`main_room`, `living_room`, `kitchen`). |
 | `homelab-display` | Waveshare **ESP32-S3-RLCD-4.2** | Shelf display for homelab status: fetches one pre-aggregated JSON document and draws it on a 400×300 reflective LCD. |
+| `desk-panel` | Guition **ESP32-S3-4848S040** (480×480 touch) | Stream-Deck-style control surface for the desk PC, driven by `host/deskd` over USB serial, plus a colour homelab dashboard. |
+| `homelab-status` | — | The status document and its fetch client, shared by both displays. |
 
 ## Build and flash
 
@@ -139,3 +141,150 @@ running bottom-up, ported from the vendor BSP. A mistake there does not fail
 loudly — it draws a scrambled but plausible image — so it was verified as an
 exact bijection against the vendor C over all 120 000 pixels before it was
 trusted.
+
+## desk-panel
+
+The board is sold as a "4 inch control display" (silkscreen `V8292`): an
+ESP32-S3-N16R8 behind a 480×480 IPS panel driven by an **ST7701S over a
+16-bit RGB bus**, with a **GT911** capacitive touch controller. The only USB
+port goes through a **CH340** to UART0 — the S3's own USB pins are used for
+touch and colour data — so the board can never appear to the PC as a USB
+keyboard. Everything it does on the PC goes through a daemon.
+
+```
+RGB (DPI):  DE=18 VSYNC=17 HSYNC=16 PCLK=21
+            B=4,5,6,7,15  G=8,20,3,46,9,10  R=11,12,13,14,0
+ST7701 3-wire SPI (init only): CS=39 SCK=48 SDA=47     backlight GPIO38
+GT911:      I2C0 SDA=19 SCL=45, address 0x5D, no INT/RST — polled
+UART0:      CH340 — TX=43 (logs + protocol), RX=44 (from deskd)
+```
+
+The factory firmware is backed up outside the repo; its ST7701 init table was
+checked byte for byte against the one in `desk-panel/src/st7701.rs`.
+
+### It works like a Stream Deck
+
+A real Stream Deck is a dumb device: it reports key presses and shows the
+bitmaps the host software sends. Profiles, pages, actions and the live state
+on each key belong to the host. `desk-panel` keeps that split:
+
+- **The panel** draws what it is sent and reports taps, long presses and
+  swipes. It knows no actions. Swiping moves between the dashboard and the
+  button pages; a minute untouched on a button page returns to the dashboard.
+- **`deskd`** (`host/deskd`) owns the profile in `~/.config/deskd/config.toml`
+  (start from `host/deskd/config.example.toml`), pushes pages of keys, runs
+  the action behind a press, and updates keys when their state changes.
+
+Actions: shell commands, key combinations to the focused window (Hyprland's
+Lua dispatcher), playerctl, PipeWire volume and mute, page navigation, and
+OBS (scene, record, stream, input mute). Keys can show live state — mic muted,
+OBS recording, the current scene — drawn inverted while true.
+
+### The wire protocol
+
+JSON lines over the CH340 at 115200 (`host/desk-core/src/protocol.rs`). The
+same UART carries the panel's logs, so device lines start with `@` and deskd
+treats everything else as log. It is deliberately strict, because a press on
+this link can run a command:
+
+- **Stop and wait.** The panel acks every host line; deskd sends nothing more
+  until it does. The panel's RX runs on a higher-priority interrupt executor,
+  because drawing a screen takes ~100 ms and the UART's FIFO is 128 bytes.
+- **Layouts are generations.** A profile arrives as `begin` / `page`… /
+  `commit` and replaces the old one only when complete. Every press carries
+  the generation it was made against; deskd ignores presses for any other,
+  so a press on the old layout cannot run what now sits at the same spot.
+  Generations start at a random number so a restarted deskd cannot collide
+  with its predecessor.
+- **Both ends watch the other.** deskd pings every 2 s; either side gives up
+  after 6 s of silence.
+
+`desk-core` holds the protocol, the screen geometry, gesture recognition and
+the panel's whole UI state machine. It is `no_std` and shared by the firmware
+and deskd, and it lives in `host/` so its tests run on the PC:
+
+```sh
+make host-test      # desk-core + deskd unit tests
+make host-build     # host/target/x86_64-unknown-linux-gnu/release/deskd
+```
+
+`host/` must be built from inside `host/` (the Makefile targets do): cargo
+reads its config from the working directory, and from the repository root it
+targets the ESP32-S3.
+
+### Opening the port must not reboot the board
+
+The board's auto-reset circuit is wired to the CH340's DTR/RTS. Linux drops
+both when a port closes with HUPCL set and raises them on the next open —
+which reboots the ESP32 every time deskd restarts. deskd clears HUPCL right
+after opening, so the lines stay up across closes; only the first open after
+the board appears (plug-in, or an espflash run) still resets it, and the panel
+announces itself with an unprompted `hello` for that case.
+
+### The scanout restarts every frame
+
+An RGB panel has no frame memory; something must clock a full frame out ~45
+times a second. The first design chained DMA descriptors into a ring and let
+the hardware loop. It survived a PSRAM stress test, but with WiFi running the
+picture slid sideways and stayed there — the right edge drawn at the left. A
+moment of PSRAM contention starves the LCD's FIFO, and a ring keeps going from
+the wrong byte forever. (esp-idf has the same failure; its
+`esp_lcd_rgb_panel_restart` is the remedy, and ESPHome calls it every loop for
+this board.) The scanout now sends each frame as its own transfer from the
+top of the buffer, from a loop on the second core, so an underrun can spoil at
+most one frame. See `desk-panel/src/scanout.rs`.
+
+### Approving Claude Code from the panel
+
+`deskd hook` is a Claude Code `PermissionRequest` hook. It hands the request
+to the daemon, which shows it on the panel; the button pressed becomes the
+decision. Every way of *not* answering — no daemon, no panel, a timeout, the
+**Terminal** button — prints nothing, which hands the request back to Claude
+Code's own prompt. Silence is never approval.
+
+**Allow** is offered only when the panel can show the whole operation: the
+full Bash command, or the path for file edits, in the panel's ASCII font. A
+command too long for the modal, or containing characters the font cannot
+draw, gets Deny and Terminal only. A finger already on the glass when the
+modal appears cannot answer it, and concurrent requests queue.
+
+The hook is not registered by default — it changes every Claude Code session.
+To enable it, add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PermissionRequest": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "deskd hook", "timeout": 60 }] }
+    ]
+  }
+}
+```
+
+The hook waits at most 55 s, under the 60 s above, so it falls back on its
+own rather than being killed.
+
+### Running deskd
+
+```sh
+make host-build
+install -Dm755 host/target/x86_64-unknown-linux-gnu/release/deskd ~/.local/bin/deskd
+install -Dm644 host/deskd/config.example.toml ~/.config/deskd/config.toml   # then edit
+deskd check
+install -Dm644 host/deskd/deskd.service ~/.config/systemd/user/deskd.service
+systemctl --user enable --now deskd
+deskd ctl '{"cmd":"status"}'
+```
+
+`deskd ctl '{"cmd":"reload"}'` re-reads the config and pushes it. OBS is
+contacted only when some key uses it; the obs-websocket password comes from
+`$OBS_WEBSOCKET_PASSWORD` or, failing that, from OBS's own config.
+
+### The dashboard and the network
+
+The dashboard is the same document homelab-display shows (see above), on the
+same `STATUS_URL` and `STATUS_TOKEN`. `make … PKG=desk-panel` sources
+`.env.desk-panel` after `.env`, which is where this board's WiFi credentials
+go. Status fetching is network-dependent: the board must be on a segment
+allowed to reach the status server, or the dashboard shows `NO DATA`. The
+button pages do not need WiFi at all.
