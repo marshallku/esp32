@@ -21,9 +21,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::{
     actions::{self, Effect},
+    approval::{Approvals, Ask, Decision},
     config,
     control::Request,
-    deck::Deck,
+    deck::{self, Deck},
     obs, serial,
 };
 
@@ -37,6 +38,7 @@ const SILENCE: Duration = Duration::from_secs(6);
 pub enum Event {
     State(String, bool),
     Control(Request, oneshot::Sender<Value>),
+    Approve(Ask, oneshot::Sender<Decision>),
 }
 
 /// Waits for the panel, runs a session, and starts over when it ends. Never
@@ -85,6 +87,10 @@ async fn idle(deck: &mut Deck, events: &mut mpsc::Receiver<Event>, why: &str) {
                 Event::Control(_, reply) => {
                     let _ = reply.send(json!({ "ok": false, "connected": false, "error": why }));
                 }
+                // No panel to ask: Claude Code's own prompt takes it.
+                Event::Approve(_, reply) => {
+                    let _ = reply.send(Decision::Terminal);
+                }
             },
         }
     }
@@ -101,6 +107,9 @@ struct Session {
     fw: Option<String>,
     screen: Option<u8>,
     obs: Option<obs::Handle>,
+    /// Dropped with the session, which answers every waiting hook with
+    /// "terminal": a panel that went away cannot have approved anything.
+    approvals: Approvals,
 }
 
 struct InFlight {
@@ -122,6 +131,7 @@ impl Session {
             fw: None,
             screen: None,
             obs,
+            approvals: Approvals::default(),
         }
     }
 
@@ -189,6 +199,9 @@ impl Session {
                 self.clock.clear();
                 self.queue_clock();
                 self.outbox.extend(deck.push());
+                // A rebooted panel lost the modal it was showing; the hook
+                // behind it is still waiting, so put it back up (re-armed).
+                self.outbox.extend(self.approvals.current_prompt());
             }
             DeviceMsg::Ack => self.in_flight = None,
             DeviceMsg::Pong => {}
@@ -206,7 +219,10 @@ impl Session {
                 }
                 None => eprintln!("ignored press {page}/{index} against stale generation {generation}"),
             },
-            DeviceMsg::Answer { id, button } => eprintln!("answer {button} to prompt {id} with nothing waiting"),
+            DeviceMsg::Answer { id, button } => {
+                eprintln!("prompt {id} answered with button {button}");
+                self.outbox.extend(self.approvals.answer(id, button));
+            }
             DeviceMsg::Screen { page } => self.screen = page,
             DeviceMsg::Err { msg } => eprintln!("panel rejected a message: {msg}"),
         }
@@ -231,6 +247,9 @@ impl Session {
                         "screen": self.screen,
                     }),
                     Request::States => json!({ "ok": true, "states": deck.states() }),
+                    // control::handle turns these into Event::Approve; one
+                    // arriving here would be a wiring bug, so say so.
+                    Request::Approve { .. } => json!({ "ok": false, "error": "approve must arrive as Event::Approve" }),
                     Request::Inject { gesture } if self.fw.is_some() => {
                         self.outbox.push_back(HostMsg::Inject { gesture });
                         json!({ "ok": true })
@@ -248,6 +267,17 @@ impl Session {
                     },
                 };
                 let _ = reply.send(answer);
+            }
+            Event::Approve(ask, reply) => {
+                if self.fw.is_none() {
+                    let _ = reply.send(Decision::Terminal);
+                    return;
+                }
+                // Random ids: an answer meant for a prompt from before a
+                // deskd restart can never match one from after it.
+                let id = (u64::from(deck::random_u32()) << 32) | u64::from(deck::random_u32());
+                eprintln!("permission request {id}: {} in {}", ask.tool_name, ask.cwd);
+                self.outbox.extend(self.approvals.push(id, ask, reply));
             }
         }
     }
@@ -277,6 +307,7 @@ impl Session {
         if self.fw.is_some() {
             self.queue_clock();
         }
+        self.outbox.extend(self.approvals.reap());
         Ok(())
     }
 

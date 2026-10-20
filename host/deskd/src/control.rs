@@ -12,12 +12,15 @@ use desk_core::protocol::Gesture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
     sync::{mpsc, oneshot},
 };
 
-use crate::session::Event;
+use crate::{
+    approval::{Ask, Decision},
+    session::Event,
+};
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -27,6 +30,9 @@ pub enum Request {
     States,
     Inject { gesture: Gesture },
     Reload,
+    /// From `deskd hook`: put a Claude Code permission request on the panel
+    /// and answer with the button pressed.
+    Approve { ask: Ask },
 }
 
 pub fn socket_path() -> PathBuf {
@@ -52,9 +58,23 @@ pub async fn serve(events: mpsc::Sender<Event>) -> Result<()> {
 
 async fn handle(stream: UnixStream, events: mpsc::Sender<Event>) -> Result<()> {
     let (read, mut write) = stream.into_split();
+    let mut read = BufReader::new(read);
     let mut line = String::new();
-    BufReader::new(read).read_line(&mut line).await?;
+    read.read_line(&mut line).await?;
     let reply = match serde_json::from_str::<Request>(&line) {
+        Ok(Request::Approve { ask }) => {
+            let (tx, rx) = oneshot::channel();
+            events.send(Event::Approve(ask, tx)).await.context("daemon shutting down")?;
+            // Wait for the panel, but notice the hook going away: Claude Code
+            // kills it on timeout, and dropping `rx` is how the session learns
+            // to take the prompt down.
+            let mut probe = [0u8; 1];
+            let decision = tokio::select! {
+                decision = rx => decision.unwrap_or(Decision::Terminal),
+                _ = read.read(&mut probe) => return Ok(()),
+            };
+            serde_json::json!({ "ok": true, "decision": decision })
+        }
         Ok(req) => {
             let (tx, rx) = oneshot::channel();
             events.send(Event::Control(req, tx)).await.context("daemon shutting down")?;

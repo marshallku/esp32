@@ -8,8 +8,11 @@
 //!   deskd check [PATH]    validate a config file and exit
 //!   deskd ctl JSON        send one control request to the running daemon,
 //!                         e.g. '{"cmd":"status"}' or '{"cmd":"reload"}'
+//!   deskd hook            Claude Code PermissionRequest hook: reads the
+//!                         request on stdin, asks the panel, prints the decision
 
 mod actions;
+mod approval;
 mod config;
 mod control;
 mod deck;
@@ -18,7 +21,7 @@ mod serial;
 mod session;
 mod states;
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use tokio::sync::mpsc;
@@ -43,7 +46,35 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some("hook") => {
+            hook().await;
+            Ok(())
+        }
         Some(other) => bail!("unknown command '{other}'"),
+    }
+}
+
+/// Longest the hook waits for the panel. Kept under the hook's own timeout
+/// in Claude Code's settings (60 s) so the hook answers "terminal" itself
+/// rather than being killed.
+const HOOK_WAIT: Duration = Duration::from_secs(55);
+
+/// The PermissionRequest hook. It can only ever print an allow or deny the
+/// panel produced; every failure — no daemon, no panel, timeout, unreadable
+/// input — prints nothing and exits 0, which hands the request back to
+/// Claude Code's own prompt.
+async fn hook() {
+    let wait = std::env::var("DESKD_HOOK_WAIT_SECS").ok().and_then(|s| s.parse().ok()).map_or(HOOK_WAIT, Duration::from_secs);
+    let mut input = String::new();
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut input).is_err() {
+        return;
+    }
+    let Ok(ask) = serde_json::from_str::<approval::Ask>(&input) else { return };
+    let req = serde_json::json!({ "cmd": "approve", "ask": ask });
+    let Ok(Ok(reply)) = tokio::time::timeout(wait, control::request(&req)).await else { return };
+    let decision = serde_json::from_value(reply["decision"].clone()).unwrap_or(approval::Decision::Terminal);
+    if let Some(out) = approval::hook_output(decision) {
+        println!("{out}");
     }
 }
 

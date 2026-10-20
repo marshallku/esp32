@@ -103,7 +103,7 @@ impl Deck {
     }
 }
 
-fn random_u32() -> u32 {
+pub fn random_u32() -> u32 {
     let mut bytes = [0u8; 4];
     // /dev/urandom does not fail on Linux once booted; if it somehow did, a
     // clock-derived value is still far better than a constant.
