@@ -5,6 +5,7 @@
 //! running it, and execution is a thin spawn on top.
 
 use anyhow::{Result, bail};
+use desk_core::protocol::ScreenId;
 use serde::Deserialize;
 
 use crate::obs;
@@ -32,6 +33,8 @@ pub enum Action {
     Page { index: u8 },
     /// Switch the panel to the dashboard.
     Dashboard,
+    /// Switch the panel to the PC stats screen.
+    Stats,
     /// OBS: switch the program scene.
     ObsScene { scene: String },
     /// OBS: start or stop recording.
@@ -46,7 +49,7 @@ pub enum Action {
 #[derive(Debug, PartialEq)]
 pub enum Effect {
     Run(Vec<String>),
-    Goto(Option<u8>),
+    Goto(ScreenId),
     Obs(obs::Command),
 }
 
@@ -91,8 +94,9 @@ impl Action {
             }
             Action::Mute => run(&["wpctl", "set-mute", SINK, "toggle"]),
             Action::MicMute => run(&["wpctl", "set-mute", SOURCE, "toggle"]),
-            Action::Page { index } => Effect::Goto(Some(*index)),
-            Action::Dashboard => Effect::Goto(None),
+            Action::Page { index } => Effect::Goto(ScreenId::Page(*index)),
+            Action::Dashboard => Effect::Goto(ScreenId::Dash),
+            Action::Stats => Effect::Goto(ScreenId::Stats),
             Action::ObsScene { scene } => Effect::Obs(obs::Command::Scene(scene.clone())),
             Action::ObsRecord => Effect::Obs(obs::Command::ToggleRecord),
             Action::ObsStream => Effect::Obs(obs::Command::ToggleStream),
@@ -150,8 +154,8 @@ mod tests {
 
     #[test]
     fn navigation_is_not_a_command() {
-        assert_eq!(Action::Page { index: 1 }.effect(), Effect::Goto(Some(1)));
-        assert_eq!(Action::Dashboard.effect(), Effect::Goto(None));
+        assert_eq!(Action::Page { index: 1 }.effect(), Effect::Goto(ScreenId::Page(1)));
+        assert_eq!(Action::Dashboard.effect(), Effect::Goto(ScreenId::Dash));
         assert!(Action::Page { index: 2 }.validate(2).is_err());
     }
 }

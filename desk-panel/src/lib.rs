@@ -7,6 +7,7 @@ pub mod display;
 pub mod framebuffer;
 pub mod gt911;
 pub mod link;
+pub mod pcstats;
 pub mod scanout;
 pub mod st7701;
 pub mod status;

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change. `hello` carries it both ways and the
 /// host refuses a device that disagrees.
-pub const PROTO: u16 = 1;
+pub const PROTO: u16 = 2;
 
 /// Longest line either side may send, newline included. Sized so a full page
 /// of keys at the label caps in `text` fits even when every character needs a
@@ -55,6 +55,48 @@ pub enum Dir {
     Right,
 }
 
+/// The panel's screens, in swipe order: dashboard, PC stats, notifications,
+/// then the button pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenId {
+    Dash,
+    Stats,
+    Notes,
+    Page(u8),
+}
+
+/// One sample of the PC's vitals. Every reading is optional: a missing sensor
+/// is drawn as a dash, not a confident zero.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Stats {
+    /// Whole-CPU busy %.
+    pub cpu: Option<u8>,
+    /// Per-core busy %, at most `MAX_CORES` (larger CPUs are averaged down).
+    #[serde(default)]
+    pub cores: Vec<u8>,
+    /// °C.
+    pub cpu_temp: Option<i16>,
+    /// MiB.
+    pub mem_used: Option<u32>,
+    pub mem_total: Option<u32>,
+    pub gpu: Option<Gpu>,
+    /// KiB/s summed over every non-loopback interface.
+    pub net_rx: Option<u32>,
+    pub net_tx: Option<u32>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gpu {
+    pub util: Option<u8>,
+    pub temp: Option<i16>,
+    /// MiB.
+    pub vram_used: Option<u32>,
+    pub vram_total: Option<u32>,
+}
+
+pub const MAX_CORES: usize = 16;
+
 /// A finished touch, as the gesture recogniser reports it and as the host can
 /// inject it for testing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,13 +117,14 @@ pub enum HostMsg {
     Commit { generation: u32 },
     /// Live update of one key in the active layout.
     Key { generation: u32, page: u8, index: u8, key: Key },
-    /// `None` is the dashboard.
-    Goto { page: Option<u8> },
+    Goto { screen: ScreenId },
     /// Wall-clock text for the status strip; the board has no clock of its own.
     Time { text: String },
     /// A modal that takes over the screen until answered or dismissed.
     Prompt { id: u64, title: String, body: String, buttons: Vec<String> },
     Dismiss { id: u64 },
+    /// The PC's vitals, about once a second.
+    Stats(Stats),
     /// Test hook: behave as if this gesture had just been made on the glass.
     Inject { gesture: Gesture },
 }
@@ -94,8 +137,8 @@ pub enum DeviceMsg {
     Pong,
     Press { generation: u32, page: u8, index: u8, long: bool },
     Answer { id: u64, button: u8 },
-    /// The screen now showing; `None` is the dashboard.
-    Screen { page: Option<u8> },
+    /// The screen now showing.
+    Screen { screen: ScreenId },
     Err { msg: String },
 }
 
@@ -165,6 +208,22 @@ mod tests {
         assert!(decode_device("user@host: ok").is_none(), "a bare @ is not a message");
         let glued = alloc::format!("rst:0x1 (POWE{line}");
         assert_eq!(decode_device(&glued).unwrap().unwrap(), msg);
+    }
+
+    #[test]
+    fn screens_and_stats_round_trip() {
+        let msg = HostMsg::Goto { screen: ScreenId::Page(3) };
+        assert_eq!(encode_host(&msg), "{\"t\":\"goto\",\"screen\":{\"page\":3}}\n");
+        assert_eq!(decode_host(&encode_host(&msg)).unwrap(), msg);
+        let stats = HostMsg::Stats(Stats {
+            cpu: Some(12),
+            cores: vec![1; MAX_CORES],
+            gpu: Some(Gpu { util: Some(3), ..Default::default() }),
+            ..Default::default()
+        });
+        let line = encode_host(&stats);
+        assert!(line.len() < 512, "a stats line is small: {}", line.len());
+        assert_eq!(decode_host(&line).unwrap(), stats);
     }
 
     #[test]

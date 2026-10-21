@@ -12,7 +12,7 @@ ESPENV := . $$HOME/.cargo/env-esp.sh; \
   if [ -f .env.$(LOCATION) ]; then set -a; . ./.env.$(LOCATION); set +a; fi; \
   if [ -f .env.$(PKG) ]; then set -a; . ./.env.$(PKG); set +a; fi;
 
-.PHONY: help build flash run monitor reset info release clean host-test host-build
+.PHONY: help build flash run monitor reset info release clean host-test host-build e2e
 
 help:
 	@echo "ESP32-S3 monorepo workspace — usage:"
@@ -27,6 +27,7 @@ help:
 	@echo "  make clean            cargo clean (workspace 전체)"
 	@echo "  make host-test        desk-core + deskd 테스트 (PC 툴체인)"
 	@echo "  make host-build       deskd release 빌드 → host/target/x86_64-unknown-linux-gnu/release/deskd"
+	@echo "  make e2e              desk-panel 실기기 e2e (보드 연결 + desk-panel 플래시 필요, deskd 서비스는 멈춘 상태로)"
 	@echo ""
 	@echo "현재 기본 패키지: $(PKG)"
 	@echo "현재 기본 바이너리: $(BIN)"
@@ -76,3 +77,11 @@ host-test:
 
 host-build:
 	cd host && cargo build --release -p deskd
+
+# Hardware e2e for desk-panel: needs the board plugged in, flashed with the
+# current firmware, and no other deskd holding its port. OBS has its own
+# script (host/e2e/obs.sh) because it needs OBS running.
+e2e:
+	cd host && cargo build -p deskd
+	host/e2e/deck.sh
+	host/e2e/claude.sh

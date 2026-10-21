@@ -51,8 +51,13 @@ impl Deck {
     }
 
     /// Replaces the profile (config reload). The caller pushes afterwards.
+    ///
+    /// The generation moves on at once, not when the push goes out: until
+    /// then the panel still shows the old keys, and a press on one of them
+    /// must not resolve against the new config's action in the same slot.
     pub fn replace(&mut self, config: Config) {
         self.config = config;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// The action behind a press, if it was made against the layout on the
@@ -156,6 +161,16 @@ action = { type = "dashboard" }
         assert_eq!(d.resolve(generation, 0, 5), None);
         d.push();
         assert_eq!(d.resolve(generation, 0, 1), None, "stale generation");
+    }
+
+    #[test]
+    fn replacing_the_config_invalidates_presses_on_the_old_layout_at_once() {
+        let mut d = deck();
+        let HostMsg::Begin { generation, .. } = d.push()[0] else { panic!("expected begin") };
+        d.replace(parse("[[page]]\nname = \"x\"\n[[page.key]]\nlabel = \"New\"\naction = { type = \"stats\" }\n").unwrap());
+        assert_eq!(d.resolve(generation, 0, 0), None, "old keys are still on screen until the push lands");
+        let HostMsg::Begin { generation: next, .. } = d.push()[0] else { panic!("expected begin") };
+        assert_eq!(d.resolve(next, 0, 0), Some(&Action::Stats));
     }
 
     #[test]

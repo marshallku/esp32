@@ -7,7 +7,6 @@
 //! is decided in one place.
 
 use std::{
-    collections::VecDeque,
     fs::File,
     io::Write,
     path::{Path, PathBuf},
@@ -15,7 +14,7 @@ use std::{
 };
 
 use anyhow::{Result, bail};
-use desk_core::protocol::{self, DeviceMsg, HostMsg, PROTO};
+use desk_core::protocol::{self, DeviceMsg, HostMsg, PROTO, ScreenId, Stats};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
@@ -25,7 +24,9 @@ use crate::{
     config,
     control::Request,
     deck::{self, Deck},
-    obs, serial,
+    obs,
+    outbox::Outbox,
+    serial,
 };
 
 const ACK_TIMEOUT: Duration = Duration::from_secs(1);
@@ -39,6 +40,7 @@ pub enum Event {
     State(String, bool),
     Control(Request, oneshot::Sender<Value>),
     Approve(Ask, oneshot::Sender<Decision>),
+    Stats(Stats),
 }
 
 /// Waits for the panel, runs a session, and starts over when it ends. Never
@@ -91,6 +93,8 @@ async fn idle(deck: &mut Deck, events: &mut mpsc::Receiver<Event>, why: &str) {
                 Event::Approve(_, reply) => {
                     let _ = reply.send(Decision::Terminal);
                 }
+                // Nobody to show them to; the next sample comes in a second.
+                Event::Stats(_) => {}
             },
         }
     }
@@ -98,14 +102,14 @@ async fn idle(deck: &mut Deck, events: &mut mpsc::Receiver<Event>, why: &str) {
 
 struct Session {
     port: File,
-    outbox: VecDeque<HostMsg>,
+    outbox: Outbox,
     in_flight: Option<InFlight>,
     last_rx: Instant,
     last_ping: Instant,
     clock: String,
     /// Set once the panel has answered `hello` with our protocol version.
     fw: Option<String>,
-    screen: Option<u8>,
+    screen: Option<ScreenId>,
     obs: Option<obs::Handle>,
     /// Dropped with the session, which answers every waiting hook with
     /// "terminal": a panel that went away cannot have approved anything.
@@ -123,7 +127,11 @@ impl Session {
         let now = Instant::now();
         Self {
             port,
-            outbox: VecDeque::from([HostMsg::Hello { proto: PROTO }]),
+            outbox: {
+                let mut outbox = Outbox::default();
+                outbox.urgent(HostMsg::Hello { proto: PROTO });
+                outbox
+            },
             in_flight: None,
             last_rx: now,
             last_ping: now,
@@ -155,7 +163,7 @@ impl Session {
                 },
                 _ = tick.tick() => self.on_tick(),
             };
-            if let Err(e) = step.and_then(|()| self.pump()) {
+            if let Err(e) = step.and_then(|()| self.pump(deck)) {
                 return e;
             }
         }
@@ -198,10 +206,12 @@ impl Session {
                 }
                 self.clock.clear();
                 self.queue_clock();
-                self.outbox.extend(deck.push());
+                self.outbox.push_layout();
                 // A rebooted panel lost the modal it was showing; the hook
                 // behind it is still waiting, so put it back up (re-armed).
-                self.outbox.extend(self.approvals.current_prompt());
+                if let Some(prompt) = self.approvals.current_prompt() {
+                    self.outbox.urgent(prompt);
+                }
             }
             DeviceMsg::Ack => self.in_flight = None,
             DeviceMsg::Pong => {}
@@ -210,7 +220,7 @@ impl Session {
                     eprintln!("press {page}/{index}{}: {action:?}", if long { " (long)" } else { "" });
                     match action.effect() {
                         Effect::Run(argv) => actions::spawn(argv),
-                        Effect::Goto(page) => self.outbox.push_back(HostMsg::Goto { page }),
+                        Effect::Goto(screen) => self.outbox.urgent(HostMsg::Goto { screen }),
                         Effect::Obs(cmd) => match &self.obs {
                             Some(obs) => obs.send(cmd),
                             None => eprintln!("OBS key pressed but OBS support is not running"),
@@ -221,9 +231,11 @@ impl Session {
             },
             DeviceMsg::Answer { id, button } => {
                 eprintln!("prompt {id} answered with button {button}");
-                self.outbox.extend(self.approvals.answer(id, button));
+                if let Some(next) = self.approvals.answer(id, button) {
+                    self.outbox.urgent(next);
+                }
             }
-            DeviceMsg::Screen { page } => self.screen = page,
+            DeviceMsg::Screen { screen } => self.screen = Some(screen),
             DeviceMsg::Err { msg } => eprintln!("panel rejected a message: {msg}"),
         }
         Ok(())
@@ -234,7 +246,14 @@ impl Session {
             Event::State(name, value) => {
                 let updates = deck.set_state(&name, value);
                 if self.fw.is_some() {
-                    self.outbox.extend(updates);
+                    for update in updates {
+                        self.outbox.key(update);
+                    }
+                }
+            }
+            Event::Stats(stats) => {
+                if self.fw.is_some() {
+                    self.outbox.stats(HostMsg::Stats(stats));
                 }
             }
             Event::Control(req, reply) => {
@@ -251,7 +270,7 @@ impl Session {
                     // arriving here would be a wiring bug, so say so.
                     Request::Approve { .. } => json!({ "ok": false, "error": "approve must arrive as Event::Approve" }),
                     Request::Inject { gesture } if self.fw.is_some() => {
-                        self.outbox.push_back(HostMsg::Inject { gesture });
+                        self.outbox.urgent(HostMsg::Inject { gesture });
                         json!({ "ok": true })
                     }
                     Request::Inject { .. } => json!({ "ok": false, "error": "panel not ready" }),
@@ -259,7 +278,7 @@ impl Session {
                         Ok(config) => {
                             deck.replace(config);
                             if self.fw.is_some() {
-                                self.outbox.extend(deck.push());
+                                self.outbox.push_layout();
                             }
                             json!({ "ok": true })
                         }
@@ -277,7 +296,9 @@ impl Session {
                 // deskd restart can never match one from after it.
                 let id = (u64::from(deck::random_u32()) << 32) | u64::from(deck::random_u32());
                 eprintln!("permission request {id}: {} in {}", ask.tool_name, ask.cwd);
-                self.outbox.extend(self.approvals.push(id, ask, reply));
+                if let Some(prompt) = self.approvals.push(id, ask, reply) {
+                    self.outbox.urgent(prompt);
+                }
             }
         }
     }
@@ -302,12 +323,14 @@ impl Session {
             self.last_ping = now;
             // Before the handshake completes the ping is a hello, so a panel
             // that missed the first one (still booting) gets asked again.
-            self.outbox.push_back(if self.fw.is_some() { HostMsg::Ping } else { HostMsg::Hello { proto: PROTO } });
+            self.outbox.urgent(if self.fw.is_some() { HostMsg::Ping } else { HostMsg::Hello { proto: PROTO } });
         }
         if self.fw.is_some() {
             self.queue_clock();
         }
-        self.outbox.extend(self.approvals.reap());
+        for msg in self.approvals.reap() {
+            self.outbox.urgent(msg);
+        }
         Ok(())
     }
 
@@ -315,16 +338,16 @@ impl Session {
         let now = local_hm();
         if now != self.clock {
             self.clock = now.clone();
-            self.outbox.push_back(HostMsg::Time { text: now });
+            self.outbox.time(HostMsg::Time { text: now });
         }
     }
 
     /// Sends the next queued line if nothing is awaiting an ack.
-    fn pump(&mut self) -> Result<()> {
+    fn pump(&mut self, deck: &mut Deck) -> Result<()> {
         if self.in_flight.is_some() {
             return Ok(());
         }
-        let Some(msg) = self.outbox.pop_front() else { return Ok(()) };
+        let Some(msg) = self.outbox.next(|| deck.push()) else { return Ok(()) };
         let line = protocol::encode_host(&msg);
         self.port.write_all(line.as_bytes())?;
         self.in_flight = Some(InFlight { msg, sent: Instant::now(), tries: 1 });

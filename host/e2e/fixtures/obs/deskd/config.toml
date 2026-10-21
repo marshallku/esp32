@@ -1,0 +1,33 @@
+# e2e fixture for host/e2e/obs.sh. Scene and input names match the OBS
+# collection on the development machine; adjust them for another.
+[[page]]
+name = "obs"
+
+[[page.key]]
+label = "Scene 4"
+state = "obs-scene:Scene 4"
+action = { type = "obs-scene", scene = "Scene 4" }
+
+[[page.key]]
+label = "Scene 3"
+state = "obs-scene:Scene 3"
+action = { type = "obs-scene", scene = "Scene 3" }
+
+[[page.key]]
+label = "Mic/Aux"
+sub = "live"
+sub_on = "MUTED"
+state = "obs-muted:Mic/Aux"
+action = { type = "obs-mute", input = "Mic/Aux" }
+
+[[page.key]]
+label = "REC"
+state = "obs-recording"
+action = { type = "obs-record" }
+
+[[page.key]]
+label = "OBS"
+sub = "offline"
+sub_on = "connected"
+state = "obs-connected"
+action = { type = "dashboard" }

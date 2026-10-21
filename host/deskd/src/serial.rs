@@ -35,7 +35,9 @@ pub fn find() -> Option<PathBuf> {
         .find(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with(CH340)))
 }
 
-/// Opens `path` raw at 115200 8N1 and returns the writing end plus a channel
+/// Opens `path` raw at 921600 8N1 — the panel switches its UART to that
+/// rate once booted (ROM and bootloader output before it stays at 115200 and
+/// reads as noise, which the protocol skips) and returns the writing end plus a channel
 /// of complete lines. The channel closes when the port does — unplugging the
 /// board ends the session.
 pub fn open(path: &Path) -> Result<(File, mpsc::Receiver<String>)> {
@@ -48,7 +50,7 @@ pub fn open(path: &Path) -> Result<(File, mpsc::Receiver<String>)> {
 
     let mut tio = termios::tcgetattr(&file)?;
     termios::cfmakeraw(&mut tio);
-    termios::cfsetspeed(&mut tio, BaudRate::B115200)?;
+    termios::cfsetspeed(&mut tio, BaudRate::B921600)?;
     tio.control_flags.insert(ControlFlags::CLOCAL | ControlFlags::CREAD);
     tio.control_flags.remove(ControlFlags::HUPCL);
     // Reads return after at most 200 ms even with nothing to read, so the

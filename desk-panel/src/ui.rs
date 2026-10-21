@@ -21,7 +21,10 @@ use embedded_graphics::{
     text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 
-use crate::dashboard::{self, Dash};
+use crate::{
+    dashboard::{self, Dash},
+    pcstats,
+};
 
 const BG: Rgb565 = Rgb565::BLACK;
 const DIM: Rgb565 = Rgb565::new(12, 24, 12);
@@ -34,6 +37,7 @@ pub fn draw<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, dash: &Das
     match app.view() {
         View::Prompt(prompt) => draw_prompt(target, prompt),
         View::Dashboard => dashboard::draw(target, app, dash),
+        View::Stats { stats, stale, history } => pcstats::draw(target, app, stats, stale, history),
         View::Deck { keys, .. } => {
             strip(target, app, "DECK", false);
             for (i, key) in keys.iter().enumerate() {
@@ -50,8 +54,7 @@ pub fn draw<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, dash: &Das
 }
 
 /// Title on the left, page dots in the middle, link state and clock on the
-/// right. The dots count the dashboard as the first screen, matching the
-/// swipe order. `alarm` paints the whole strip as a warning.
+/// right. One dot per screen, in swipe order. `alarm` paints the whole strip as a warning.
 pub fn strip<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, title: &str, alarm: bool) {
     if alarm {
         let _ = Rectangle::new(Point::zero(), Size::new(W as u32, STRIP_H as u32))
@@ -61,8 +64,9 @@ pub fn strip<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, title: &s
     let style = MonoTextStyle::new(&FONT_10X20, Rgb565::WHITE);
     let _ = Text::with_baseline(title, Point::new(12, 11), style, Baseline::Top).draw(target);
 
-    let screens = app.page_count() + 1;
-    let current = app.screen().map_or(0, |p| p as usize + 1);
+    let all = app.screens();
+    let screens = all.len();
+    let current = all.iter().position(|s| *s == app.screen()).unwrap_or(0);
     let x0 = W as i32 / 2 - (screens as i32 * 16) / 2;
     for i in 0..screens {
         let style = if i == current { PrimitiveStyle::with_fill(Rgb565::WHITE) } else { PrimitiveStyle::with_stroke(DIM, 2) };

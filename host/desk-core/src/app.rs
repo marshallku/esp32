@@ -6,12 +6,14 @@
 //! Keeping it free of hardware is what lets the rules that matter — a stale
 //! layout cannot be pressed, a held finger cannot approve — be tested here.
 
-use alloc::{string::String, vec::Vec};
+use alloc::{collections::VecDeque, string::String, vec::Vec};
 
 use crate::{
     geometry,
     gesture::Event,
-    protocol::{DeviceMsg, Dir, Gesture, HostMsg, KEYS_PER_PAGE, Key, MAX_BUTTONS, MAX_PAGES, PROTO},
+    protocol::{
+        DeviceMsg, Dir, Gesture, HostMsg, KEYS_PER_PAGE, Key, MAX_BUTTONS, MAX_PAGES, PROTO, ScreenId, Stats,
+    },
 };
 
 /// A prompt ignores touches that began less than this long after it appeared.
@@ -22,6 +24,10 @@ pub const ARM_MS: u64 = 300;
 pub const LINK_TIMEOUT_MS: u64 = 6_000;
 /// A button page left untouched this long falls back to the dashboard.
 pub const IDLE_MS: u64 = 60_000;
+/// Stats arrive about once a second; older than this and the screen says so.
+pub const STATS_STALE_MS: u64 = 5_000;
+/// Samples kept for the stats screen's history graphs.
+pub const HISTORY_LEN: usize = 120;
 
 pub struct Prompt {
     pub id: u64,
@@ -41,9 +47,35 @@ struct Staging {
     pages: Vec<Option<Vec<Key>>>,
 }
 
+/// Recent (cpu %, memory %) samples, oldest first. `None` marks a gap — the
+/// link was down or stats stopped — so a graph does not join two readings
+/// minutes apart into one line.
+#[derive(Default)]
+pub struct History {
+    samples: VecDeque<Option<(u8, u8)>>,
+}
+
+impl History {
+    pub fn iter(&self) -> impl Iterator<Item = Option<(u8, u8)>> + '_ {
+        self.samples.iter().copied()
+    }
+
+    fn push(&mut self, sample: Option<(u8, u8)>) {
+        // Consecutive gaps say nothing more than one.
+        if sample.is_none() && self.samples.back().is_some_and(Option::is_none) {
+            return;
+        }
+        if self.samples.len() == HISTORY_LEN {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+    }
+}
+
 /// What to draw.
 pub enum View<'a> {
     Dashboard,
+    Stats { stats: Option<&'a Stats>, stale: bool, history: &'a History },
     Deck { page: u8, keys: &'a [Key] },
     /// A button page was asked for but there is nothing to show on it.
     NoDeck { link_up: bool },
@@ -54,10 +86,18 @@ pub struct App {
     fw: String,
     layout: Option<Layout>,
     staging: Option<Staging>,
-    /// `None` is the dashboard.
-    screen: Option<u8>,
+    screen: ScreenId,
     prompt: Option<Prompt>,
     time: String,
+    stats: Option<Stats>,
+    stats_at: Option<u64>,
+    /// Whether the stats screen was last drawn as stale.
+    stats_stale: bool,
+    history: History,
+    /// When what lies under a finger last changed: the screen, the layout, a
+    /// modal. A touch that began before this was aimed at something else and
+    /// must not act on what is there now.
+    surface_changed_at: u64,
     last_host: Option<u64>,
     last_input: u64,
     link_up: bool,
@@ -70,9 +110,14 @@ impl App {
             fw: String::from(fw),
             layout: None,
             staging: None,
-            screen: None,
+            screen: ScreenId::Dash,
             prompt: None,
             time: String::new(),
+            stats: None,
+            stats_at: None,
+            stats_stale: false,
+            history: History::default(),
+            surface_changed_at: 0,
             last_host: None,
             last_input: 0,
             link_up: false,
@@ -85,14 +130,25 @@ impl App {
             return View::Prompt(prompt);
         }
         match (self.screen, &self.layout) {
-            (None, _) => View::Dashboard,
-            (Some(page), Some(layout)) if self.link_up => View::Deck { page, keys: &layout.pages[page as usize] },
-            (Some(_), _) => View::NoDeck { link_up: self.link_up },
+            (ScreenId::Dash, _) => View::Dashboard,
+            (ScreenId::Stats, _) => {
+                View::Stats { stats: self.stats.as_ref(), stale: self.stats_stale, history: &self.history }
+            }
+            (ScreenId::Page(page), Some(layout)) if self.link_up => {
+                View::Deck { page, keys: &layout.pages[page as usize] }
+            }
+            (ScreenId::Page(_) | ScreenId::Notes, _) => View::NoDeck { link_up: self.link_up },
         }
     }
 
-    pub fn screen(&self) -> Option<u8> {
+    pub fn screen(&self) -> ScreenId {
         self.screen
+    }
+
+    /// Every screen in swipe order.
+    pub fn screens(&self) -> Vec<ScreenId> {
+        let pages = self.page_count().max(1) as u8;
+        [ScreenId::Dash, ScreenId::Stats].into_iter().chain((0..pages).map(ScreenId::Page)).collect()
     }
 
     /// Pages in the active layout; 0 before the host has pushed one.
@@ -131,7 +187,7 @@ impl App {
                 }
                 // A restarted host knows nothing about where the panel is;
                 // tell it rather than make it guess.
-                out.push(DeviceMsg::Screen { page: self.screen });
+                out.push(DeviceMsg::Screen { screen: self.screen });
             }
             HostMsg::Ping => out.push(DeviceMsg::Pong),
             HostMsg::Begin { generation, pages } => {
@@ -156,8 +212,12 @@ impl App {
                     let pages: Vec<Vec<Key>> = s.pages.into_iter().flatten().collect();
                     let count = pages.len() as u8;
                     self.layout = Some(Layout { generation, pages });
-                    if self.screen.is_some_and(|p| p >= count) {
-                        self.set_screen(Some(count - 1), &mut out);
+                    if let ScreenId::Page(p) = self.screen {
+                        // New keys under the finger, even on the same page.
+                        self.surface_changed_at = now;
+                        if p >= count {
+                            self.set_screen(ScreenId::Page(count - 1), now, &mut out);
+                        }
                     }
                     self.dirty = true;
                 }
@@ -170,7 +230,7 @@ impl App {
                     match l.pages.get_mut(page as usize).and_then(|p| p.get_mut(index as usize)) {
                         Some(slot) => {
                             *slot = key;
-                            if self.screen == Some(page) {
+                            if self.screen == ScreenId::Page(page) {
                                 self.dirty = true;
                             }
                         }
@@ -179,11 +239,11 @@ impl App {
                 }
                 _ => out.push(err("key update for a stale layout")),
             },
-            HostMsg::Goto { page } => {
-                if page.is_none_or(|p| (p as usize) < self.page_count()) {
-                    self.set_screen(page, &mut out);
+            HostMsg::Goto { screen } => {
+                if self.screens().contains(&screen) {
+                    self.set_screen(screen, now, &mut out);
                 } else {
-                    out.push(err("goto page out of range"));
+                    out.push(err("goto a screen that does not exist"));
                 }
             }
             HostMsg::Time { text } => {
@@ -197,12 +257,30 @@ impl App {
                     out.push(err("prompt button count out of range"));
                 } else {
                     self.prompt = Some(Prompt { id, title, body, buttons, shown_at: now });
+                    self.surface_changed_at = now;
                     self.dirty = true;
                 }
             }
             HostMsg::Dismiss { id } => {
                 if self.prompt.as_ref().is_some_and(|p| p.id == id) {
                     self.prompt = None;
+                    self.surface_changed_at = now;
+                    self.dirty = true;
+                }
+            }
+            HostMsg::Stats(stats) => {
+                if self.stats_at.is_none_or(|t| now - t > STATS_STALE_MS) {
+                    self.history.push(None);
+                }
+                let mem = match (stats.mem_used, stats.mem_total) {
+                    (Some(used), Some(total)) if total > 0 => Some((u64::from(used) * 100 / u64::from(total)) as u8),
+                    _ => None,
+                };
+                self.history.push(stats.cpu.zip(mem));
+                self.stats = Some(stats);
+                self.stats_at = Some(now);
+                if self.screen == ScreenId::Stats {
+                    self.stats_stale = false;
                     self.dirty = true;
                 }
             }
@@ -215,6 +293,13 @@ impl App {
         self.last_input = now;
         let mut out = Vec::new();
 
+        // The finger went down on something that has since been replaced —
+        // another screen, another profile's keys, a modal coming or going.
+        // Acting on what is under it now would act on something unseen.
+        if ev.down_at < self.surface_changed_at {
+            return out;
+        }
+
         if let Some(prompt) = &self.prompt {
             if let Gesture::Tap { x, y } = ev.gesture
                 && ev.down_at >= prompt.shown_at + ARM_MS
@@ -222,6 +307,7 @@ impl App {
             {
                 out.push(DeviceMsg::Answer { id: prompt.id, button });
                 self.prompt = None;
+                self.surface_changed_at = now;
                 self.dirty = true;
             }
             return out;
@@ -229,20 +315,19 @@ impl App {
 
         match ev.gesture {
             Gesture::Swipe { dir } => {
-                let count = self.page_count() as i32;
-                // Screens in order: dashboard (-1), then pages 0..count.
-                let current = self.screen.map_or(-1, i32::from);
+                let screens = self.screens();
+                let current = screens.iter().position(|s| *s == self.screen).unwrap_or(0);
                 let next = match dir {
-                    Dir::Left => current + 1,
-                    Dir::Right => current - 1,
+                    Dir::Left => current.checked_add(1),
+                    Dir::Right => current.checked_sub(1),
                 };
-                if next >= -1 && next < count.max(1) {
-                    self.set_screen(u8::try_from(next).ok(), &mut out);
+                if let Some(&screen) = next.and_then(|i| screens.get(i)) {
+                    self.set_screen(screen, now, &mut out);
                 }
             }
             Gesture::Tap { x, y } | Gesture::Long { x, y } => {
                 let long = matches!(ev.gesture, Gesture::Long { .. });
-                if let (Some(page), Some(layout), true) = (self.screen, &self.layout, self.link_up)
+                if let (ScreenId::Page(page), Some(layout), true) = (self.screen, &self.layout, self.link_up)
                     && let Some(index) = geometry::key_at(x, y)
                     && (index as usize) < layout.pages[page as usize].len()
                 {
@@ -253,27 +338,39 @@ impl App {
         out
     }
 
-    /// Time-driven transitions: the host going quiet, the panel going idle.
+    /// Time-driven transitions: the host going quiet, the panel going idle,
+    /// stats going stale.
     pub fn tick(&mut self, now: u64) -> Vec<DeviceMsg> {
         let mut out = Vec::new();
         if self.link_up && self.last_host.is_none_or(|t| now - t > LINK_TIMEOUT_MS) {
             self.link_up = false;
             // An unanswerable prompt must not stay up looking answerable; the
             // host has timed it out on its side already.
-            self.prompt = None;
+            if self.prompt.take().is_some() {
+                self.surface_changed_at = now;
+            }
             self.dirty = true;
         }
-        if self.prompt.is_none() && self.screen.is_some() && now - self.last_input > IDLE_MS {
-            self.set_screen(None, &mut out);
+        if self.prompt.is_none() && matches!(self.screen, ScreenId::Page(_)) && now - self.last_input > IDLE_MS {
+            self.set_screen(ScreenId::Dash, now, &mut out);
+        }
+        let stale = self.stats_at.is_none_or(|t| now - t > STATS_STALE_MS);
+        if self.screen == ScreenId::Stats && stale != self.stats_stale {
+            self.stats_stale = stale;
+            self.dirty = true;
         }
         out
     }
 
-    fn set_screen(&mut self, page: Option<u8>, out: &mut Vec<DeviceMsg>) {
-        if self.screen != page {
-            self.screen = page;
+    fn set_screen(&mut self, screen: ScreenId, now: u64, out: &mut Vec<DeviceMsg>) {
+        if self.screen != screen {
+            self.screen = screen;
+            self.surface_changed_at = now;
             self.dirty = true;
-            out.push(DeviceMsg::Screen { page });
+            if screen == ScreenId::Stats {
+                self.stats_stale = self.stats_at.is_none_or(|t| now - t > STATS_STALE_MS);
+            }
+            out.push(DeviceMsg::Screen { screen });
         }
     }
 }
@@ -300,7 +397,7 @@ mod tests {
         app.on_host(HostMsg::Page { generation: 1, index: 0, keys: vec![key("A"), key("B")] }, 0);
         app.on_host(HostMsg::Page { generation: 1, index: 1, keys: vec![key("C")] }, 0);
         assert!(app.on_host(HostMsg::Commit { generation: 1 }, 0).is_empty());
-        app.on_host(HostMsg::Goto { page: Some(0) }, 0);
+        app.on_host(HostMsg::Goto { screen: ScreenId::Page(0) }, 0);
         app
     }
 
@@ -313,12 +410,16 @@ mod tests {
         Event { gesture, down_at }
     }
 
+    fn screen(screen: ScreenId) -> DeviceMsg {
+        DeviceMsg::Screen { screen }
+    }
+
     #[test]
     fn hello_reports_version_and_flags_mismatch() {
         let mut app = App::new("fw1");
         assert_eq!(
             app.on_host(HostMsg::Hello { proto: PROTO }, 0),
-            [DeviceMsg::Hello { proto: PROTO, fw: "fw1".into() }, DeviceMsg::Screen { page: None }]
+            [DeviceMsg::Hello { proto: PROTO, fw: "fw1".into() }, screen(ScreenId::Dash)]
         );
         assert!(matches!(app.on_host(HostMsg::Hello { proto: PROTO + 1 }, 0)[1], DeviceMsg::Err { .. }));
     }
@@ -352,14 +453,31 @@ mod tests {
     }
 
     #[test]
-    fn swipes_walk_dashboard_and_pages_and_stop_at_the_ends() {
+    fn swipes_walk_every_screen_in_order_and_stop_at_the_ends() {
         let mut app = ready();
         let swipe = |dir| at(Gesture::Swipe { dir }, 0);
-        assert_eq!(app.on_gesture(swipe(Dir::Left), 0), [DeviceMsg::Screen { page: Some(1) }]);
+        assert_eq!(app.on_gesture(swipe(Dir::Left), 0), [screen(ScreenId::Page(1))]);
         assert!(app.on_gesture(swipe(Dir::Left), 0).is_empty(), "already on the last page");
         app.on_gesture(swipe(Dir::Right), 0);
-        assert_eq!(app.on_gesture(swipe(Dir::Right), 0), [DeviceMsg::Screen { page: None }]);
+        assert_eq!(app.on_gesture(swipe(Dir::Right), 0), [screen(ScreenId::Stats)]);
+        assert_eq!(app.on_gesture(swipe(Dir::Right), 0), [screen(ScreenId::Dash)]);
         assert!(app.on_gesture(swipe(Dir::Right), 0).is_empty(), "dashboard is the first screen");
+    }
+
+    #[test]
+    fn a_touch_that_began_on_another_surface_does_nothing() {
+        let mut app = ready();
+        // Finger down at 100 on profile A's keys; profile B commits at 150.
+        app.on_host(HostMsg::Begin { generation: 2, pages: 1 }, 150);
+        app.on_host(HostMsg::Page { generation: 2, index: 0, keys: vec![key("Danger")] }, 150);
+        app.on_host(HostMsg::Commit { generation: 2 }, 150);
+        assert!(app.on_gesture(at(tap_key(0), 100), 200).is_empty(), "release lands on keys never seen");
+        assert!(matches!(app.on_gesture(at(tap_key(0), 300), 350)[..], [DeviceMsg::Press { generation: 2, .. }]));
+
+        // Same for a screen change under a held finger.
+        app.on_host(HostMsg::Goto { screen: ScreenId::Dash }, 400);
+        app.on_host(HostMsg::Goto { screen: ScreenId::Page(0) }, 450);
+        assert!(app.on_gesture(at(tap_key(0), 420), 500).is_empty());
     }
 
     #[test]
@@ -375,6 +493,7 @@ mod tests {
         assert!(app.on_gesture(at(tap_key(0), 2_000), 2_000).is_empty(), "keys are covered by the prompt");
         assert_eq!(app.on_gesture(at(allow, 1_400), 1_450), [DeviceMsg::Answer { id: 7, button: 1 }]);
         assert!(matches!(app.view(), View::Deck { .. }));
+        assert!(app.on_gesture(at(tap_key(0), 1_420), 1_500).is_empty(), "the answering finger does not also press");
     }
 
     #[test]
@@ -397,22 +516,51 @@ mod tests {
     }
 
     #[test]
-    fn idle_deck_returns_to_dashboard() {
+    fn idle_deck_returns_to_dashboard_but_stats_stays() {
         let mut app = ready();
         app.on_gesture(at(tap_key(0), 100), 100);
         app.on_host(HostMsg::Ping, IDLE_MS);
         assert!(app.tick(IDLE_MS).is_empty());
         app.on_host(HostMsg::Ping, IDLE_MS + 101);
-        assert_eq!(app.tick(IDLE_MS + 101), [DeviceMsg::Screen { page: None }]);
+        assert_eq!(app.tick(IDLE_MS + 101), [screen(ScreenId::Dash)]);
+
+        app.on_host(HostMsg::Goto { screen: ScreenId::Stats }, IDLE_MS + 200);
+        app.on_host(HostMsg::Ping, 3 * IDLE_MS);
+        assert!(app.tick(3 * IDLE_MS).is_empty(), "a stats screen is left up on purpose");
     }
 
     #[test]
     fn commit_with_fewer_pages_moves_off_a_vanished_page() {
         let mut app = ready();
-        app.on_host(HostMsg::Goto { page: Some(1) }, 0);
+        app.on_host(HostMsg::Goto { screen: ScreenId::Page(1) }, 0);
         app.on_host(HostMsg::Begin { generation: 2, pages: 1 }, 0);
         app.on_host(HostMsg::Page { generation: 2, index: 0, keys: vec![key("A")] }, 0);
-        assert_eq!(app.on_host(HostMsg::Commit { generation: 2 }, 0), [DeviceMsg::Screen { page: Some(0) }]);
+        assert_eq!(app.on_host(HostMsg::Commit { generation: 2 }, 0), [screen(ScreenId::Page(0))]);
+    }
+
+    #[test]
+    fn goto_rejects_screens_that_do_not_exist() {
+        let mut app = ready();
+        assert!(matches!(app.on_host(HostMsg::Goto { screen: ScreenId::Page(5) }, 0)[..], [DeviceMsg::Err { .. }]));
+        assert!(matches!(app.on_host(HostMsg::Goto { screen: ScreenId::Notes }, 0)[..], [DeviceMsg::Err { .. }]));
+    }
+
+    #[test]
+    fn stats_history_marks_gaps_and_staleness() {
+        let mut app = ready();
+        let stats = |cpu| HostMsg::Stats(Stats { cpu: Some(cpu), mem_used: Some(1), mem_total: Some(4), ..Default::default() });
+        app.on_host(stats(10), 1_000);
+        app.on_host(stats(20), 2_000);
+        app.on_host(stats(30), 2_000 + STATS_STALE_MS + 1);
+        let samples: Vec<_> = app.history.iter().collect();
+        assert_eq!(samples, [None, Some((10, 25)), Some((20, 25)), None, Some((30, 25))]);
+
+        app.on_host(HostMsg::Goto { screen: ScreenId::Stats }, 8_000);
+        app.take_dirty();
+        app.on_host(HostMsg::Ping, 8_000 + STATS_STALE_MS);
+        app.tick(8_000 + STATS_STALE_MS);
+        assert!(app.take_dirty(), "crossing into stale redraws");
+        assert!(matches!(app.view(), View::Stats { stale: true, .. }));
     }
 
     #[test]

@@ -169,8 +169,13 @@ bitmaps the host software sends. Profiles, pages, actions and the live state
 on each key belong to the host. `desk-panel` keeps that split:
 
 - **The panel** draws what it is sent and reports taps, long presses and
-  swipes. It knows no actions. Swiping moves between the dashboard and the
-  button pages; a minute untouched on a button page returns to the dashboard.
+  swipes. It knows no actions. Swiping walks the screens in a fixed order —
+  homelab dashboard, PC stats, then the button pages — and a minute untouched
+  on a button page returns to the dashboard.
+- **PC stats** (CPU total and per core, temperature, memory, GPU via
+  `nvidia-smi`, network) arrive from deskd once a second; the screen keeps a
+  two-minute graph, breaks it where samples are missing, and marks itself
+  stale when they stop.
 - **`deskd`** (`host/deskd`) owns the profile in `~/.config/deskd/config.toml`
   (start from `host/deskd/config.example.toml`), pushes pages of keys, runs
   the action behind a press, and updates keys when their state changes.
@@ -182,7 +187,7 @@ OBS recording, the current scene — drawn inverted while true.
 
 ### The wire protocol
 
-JSON lines over the CH340 at 115200 (`host/desk-core/src/protocol.rs`). The
+JSON lines over the CH340 at 921600 (`host/desk-core/src/protocol.rs`). The
 same UART carries the panel's logs, so device lines start with `@` and deskd
 treats everything else as log. It is deliberately strict, because a press on
 this link can run a command:
@@ -198,6 +203,20 @@ this link can run a command:
   with its predecessor.
 - **Both ends watch the other.** deskd pings every 2 s; either side gives up
   after 6 s of silence.
+- **Priorities, not a queue.** deskd sends approval prompts and screen changes
+  first, finishes a layout transfer it has started, builds a pending layout
+  only when its turn comes (so a burst of profile switches costs one
+  transfer), and keeps only the newest clock and stats sample.
+- **A touch belongs to what it began on.** A tap whose finger went down
+  before the screen, the layout or a modal changed underneath it does
+  nothing, so a release can never press a key the user did not see.
+
+The panel switches its UART to 921600 once booted; the ROM and bootloader
+still talk at 115200, which deskd reads as noise and skips. At that rate the
+UART's 128-byte FIFO fills in 1.4 ms, so the firmware raises its receive
+interrupt at 32 bytes instead of the default 120 — with the scanout keeping
+PSRAM busy, code fetched from flash could not get back to the FIFO in time
+with less margin.
 
 `desk-core` holds the protocol, the screen geometry, gesture recognition and
 the panel's whole UI state machine. It is `no_std` and shared by the firmware
@@ -206,7 +225,13 @@ and deskd, and it lives in `host/` so its tests run on the PC:
 ```sh
 make host-test      # desk-core + deskd unit tests
 make host-build     # host/target/x86_64-unknown-linux-gnu/release/deskd
+make e2e            # on the real panel: deck + Claude approval suites
+host/e2e/obs.sh     # on the real panel, against the running OBS
 ```
+
+The e2e scripts drive the panel through a real deskd and inject gestures over
+its control socket, so they need the board but no finger. Stop a resident
+deskd first: only one process can hold the port.
 
 `host/` must be built from inside `host/` (the Makefile targets do): cargo
 reads its config from the working directory, and from the repository root it

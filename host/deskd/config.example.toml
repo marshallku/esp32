@@ -13,6 +13,7 @@
 #   { type = "mic-mute" }                           toggle default input mute
 #   { type = "page", index = 1 }                    switch to another page
 #   { type = "dashboard" }                          switch to the dashboard
+#   { type = "stats" }                              switch to the PC stats screen
 #   { type = "obs-scene", scene = "Desk" }          OBS: switch program scene
 #   { type = "obs-record" }                         OBS: start/stop recording
 #   { type = "obs-stream" }                         OBS: start/stop streaming

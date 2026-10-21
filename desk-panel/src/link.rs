@@ -5,7 +5,7 @@
 //! never interleave mid-line; the host tells them apart by the `@` prefix.
 //! RX is a separate esp-hal driver, run on a higher-priority interrupt
 //! executor: the UI task spends ~100 ms at a time drawing, and the UART's
-//! 128-byte hardware FIFO would overflow behind it at 115200 baud.
+//! 128-byte hardware FIFO would overflow behind it.
 
 use alloc::string::String;
 
@@ -13,12 +13,16 @@ use desk_core::protocol::{self, DeviceMsg, MAX_LINE};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel};
 use esp_hal::{
     peripherals::{GPIO44, UART0},
-    uart::{Config, UartRx},
+    uart::{Config, RxConfig, UartRx},
 };
 use esp_println::{print, println};
 
 /// Complete lines waiting for the UI task. Stop-and-wait means the host has
 /// at most one line in flight, so this only ever holds one or two.
+/// Must match deskd's `serial::open`.
+pub const BAUD: u32 = 921_600;
+const RX_THRESHOLD: u16 = 32;
+
 pub static LINES: Channel<CriticalSectionRawMutex, Line, 4> = Channel::new();
 
 pub enum Line {
@@ -36,9 +40,19 @@ pub fn send(msg: &DeviceMsg) {
 /// is built inside it.
 #[embassy_executor::task]
 pub async fn rx_task(uart: UART0<'static>, pin: GPIO44<'static>) -> ! {
-    // Default config is 115200 8N1, matching what esp-println and the ROM
-    // already use on the shared TX side.
-    let mut rx = UartRx::new(uart, Config::default()).expect("UART0 RX config").with_rx(pin).into_async();
+    // UART0's baud divider is shared by both directions, so this also moves
+    // esp-println's output — and only from here on: the ROM, the bootloader
+    // and the first lines of this firmware still come out at 115200, which
+    // deskd reads as noise and skips. 921600 makes a full layout push take
+    // ~0.2 s on the wire instead of ~1.4 s.
+    //
+    // The FIFO interrupt fires at 32 bytes rather than the default 120: at
+    // this rate the 128-byte FIFO fills in 1.4 ms, and code fetched from flash
+    // while the scanout saturates PSRAM can take longer than the default's
+    // 8-byte margin to come back for it (seen on hardware as FifoOverflowed).
+    let config =
+        Config::default().with_baudrate(BAUD).with_rx(RxConfig::default().with_fifo_full_threshold(RX_THRESHOLD));
+    let mut rx = UartRx::new(uart, config).expect("UART0 RX config").with_rx(pin).into_async();
     let mut line: heapless::Vec<u8, MAX_LINE> = heapless::Vec::new();
     let mut discarding = false;
     let mut buf = [0u8; 128];

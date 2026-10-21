@@ -1,0 +1,31 @@
+# e2e fixture: shell actions leave a file in $E2E_OUT (set by e2e/lib.sh).
+[[page]]
+name = "main"
+
+[[page.key]]
+label = "Touch A"
+color = "#204060"
+action = { type = "shell", cmd = "date +%s.%N > \"$E2E_OUT/pressed-a\"" }
+
+[[page.key]]
+label = "Mic"
+sub = "live"
+sub_on = "muted"
+state = "mic-muted"
+action = { type = "shell", cmd = "true" }
+
+[[page.key]]
+label = "Next page"
+action = { type = "page", index = 1 }
+
+[[page]]
+name = "second"
+
+[[page.key]]
+label = "Touch B"
+color = "#602040"
+action = { type = "shell", cmd = "date +%s.%N > \"$E2E_OUT/pressed-b\"" }
+
+[[page.key]]
+label = "Dashboard"
+action = { type = "dashboard" }
