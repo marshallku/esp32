@@ -40,8 +40,8 @@ pub fn draw<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, dash: &Das
         View::Prompt(prompt) => draw_prompt(target, prompt),
         View::Dashboard => dashboard::draw(target, app, dash),
         View::Stats { stats, stale, history } => pcstats::draw(target, app, stats, stale, history),
-        View::Deck { keys, .. } => {
-            strip(target, app, "DECK", false);
+        View::Deck { keys, title, .. } => {
+            strip(target, app, if title.is_empty() { "DECK" } else { title }, false);
             for (i, key) in keys.iter().enumerate() {
                 draw_key(target, geometry::key_rect(i), key);
             }

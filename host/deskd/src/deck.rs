@@ -13,6 +13,11 @@ use crate::{
 
 pub struct Deck {
     config: Config,
+    /// The app profile showing; `None` is the default one.
+    profile: Option<usize>,
+    /// The focused window class it was chosen for, so a config reload can
+    /// pick the right profile again.
+    class: String,
     states: HashMap<String, bool>,
     /// Bumped on every full push. Presses echo it back, and one that does not
     /// match is from a layout the panel no longer shows.
@@ -29,7 +34,7 @@ impl Deck {
         // first push must not match the new layout's generation. A clock
         // seed collides when a restart lands within a few pushes' worth of
         // seconds of the previous start.
-        Self { config, states: HashMap::new(), generation: random_u32(), pushed: false }
+        Self { config, profile: None, class: String::new(), states: HashMap::new(), generation: random_u32(), pushed: false }
     }
 
     /// The whole profile as the panel's `begin` / `page`… / `commit`.
@@ -37,8 +42,10 @@ impl Deck {
         self.generation = self.generation.wrapping_add(1);
         self.pushed = true;
         let generation = self.generation;
-        let mut msgs = vec![HostMsg::Begin { generation, pages: self.config.pages.len() as u8 }];
-        for (index, page) in self.config.pages.iter().enumerate() {
+        let pages = self.config.pages(self.profile);
+        let title = self.config.title(self.profile).to_string();
+        let mut msgs = vec![HostMsg::Begin { generation, pages: pages.len() as u8, title }];
+        for (index, page) in pages.iter().enumerate() {
             let keys = page.keys.iter().map(|k| self.render(k)).collect();
             msgs.push(HostMsg::Page { generation, index: index as u8, keys });
         }
@@ -56,8 +63,29 @@ impl Deck {
     /// then the panel still shows the old keys, and a press on one of them
     /// must not resolve against the new config's action in the same slot.
     pub fn replace(&mut self, config: Config) {
+        self.profile = config.profile_for(&self.class);
         self.config = config;
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// Switches to the profile for a focused window class. Returns whether it
+    /// changed — the caller then pushes. Like `replace`, the generation moves
+    /// on at once, so a press on the outgoing profile's keys resolves to
+    /// nothing rather than to whatever the new profile has in that slot.
+    pub fn focus(&mut self, class: &str) -> bool {
+        self.class = class.to_string();
+        let profile = self.config.profile_for(class);
+        if profile == self.profile {
+            return false;
+        }
+        self.profile = profile;
+        self.generation = self.generation.wrapping_add(1);
+        true
+    }
+
+    /// The profile's name, for status; empty for the default.
+    pub fn profile_name(&self) -> &str {
+        self.config.title(self.profile)
     }
 
     /// The action behind a press, if it was made against the layout on the
@@ -66,7 +94,7 @@ impl Deck {
         if generation != self.generation {
             return None;
         }
-        self.config.pages.get(page as usize)?.keys.get(index as usize).map(|k| &k.action)
+        self.config.pages(self.profile).get(page as usize)?.keys.get(index as usize).map(|k| &k.action)
     }
 
     /// Records a state value and returns updates for every key showing it.
@@ -77,7 +105,7 @@ impl Deck {
         }
         self.states.insert(name.to_string(), value);
         let mut msgs = Vec::new();
-        for (page, p) in self.config.pages.iter().enumerate() {
+        for (page, p) in self.config.pages(self.profile).iter().enumerate() {
             for (index, k) in p.keys.iter().enumerate() {
                 if k.state.as_deref() == Some(name) {
                     msgs.push(HostMsg::Key {
@@ -147,7 +175,7 @@ action = { type = "dashboard" }
     fn push_is_a_complete_generation() {
         let mut d = deck();
         let msgs = d.push();
-        let HostMsg::Begin { generation, pages: 1 } = msgs[0] else { panic!("expected begin") };
+        let HostMsg::Begin { generation, pages: 1, .. } = msgs[0] else { panic!("expected begin") };
         assert!(matches!(msgs.last(), Some(HostMsg::Commit { generation: g }) if *g == generation));
         assert_eq!(d.push().len(), msgs.len());
         assert!(matches!(d.push()[0], HostMsg::Begin { generation: g, .. } if g == generation.wrapping_add(2)));
@@ -171,6 +199,41 @@ action = { type = "dashboard" }
         assert_eq!(d.resolve(generation, 0, 0), None, "old keys are still on screen until the push lands");
         let HostMsg::Begin { generation: next, .. } = d.push()[0] else { panic!("expected begin") };
         assert_eq!(d.resolve(next, 0, 0), Some(&Action::Stats));
+    }
+
+    #[test]
+    fn focus_switches_profiles_and_invalidates_the_old_one_at_once() {
+        let mut d = Deck::new(
+            parse(
+                r#"
+[[page]]
+name = "default"
+[[page.key]]
+label = "Default"
+action = { type = "dashboard" }
+
+[[app]]
+name = "Term"
+class = ["kitty"]
+[[app.page]]
+name = "t"
+[[app.page.key]]
+label = "Split"
+action = { type = "stats" }
+"#,
+            )
+            .unwrap(),
+        );
+        let HostMsg::Begin { generation, .. } = d.push()[0].clone() else { panic!("expected begin") };
+        assert!(d.focus("kitty"));
+        assert!(!d.focus("kitty"), "same profile, nothing to do");
+        assert_eq!(d.resolve(generation, 0, 0), None, "the default's keys are still on screen");
+        let push = d.push();
+        let HostMsg::Begin { generation, title, .. } = &push[0] else { panic!("expected begin") };
+        assert_eq!(title, "Term");
+        assert_eq!(d.resolve(*generation, 0, 0), Some(&Action::Stats));
+        assert!(d.focus("firefox"), "no profile for it: back to the default");
+        assert_eq!(d.profile_name(), "");
     }
 
     #[test]

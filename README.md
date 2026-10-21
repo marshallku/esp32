@@ -184,6 +184,13 @@ on each key belong to the host. `desk-panel` keeps that split:
   border three times — until the list is opened, for a critical one. Tapping
   the banner opens the list; swipe up and down to scroll it, hold a row to
   remove it. deskd keeps the last 20 and resyncs the panel after a reconnect.
+- **App profiles**, like the Stream Deck's: an `[[app]]` in the config lists
+  window classes and its own pages, and while one of those windows has
+  focus its pages replace the default ones (opening on page 0, with the
+  profile's name in the status strip). Focus comes from Hyprland's event
+  socket, read once at startup and then followed, settling for 150 ms so a
+  launcher flashing past does not flip the deck. Without Hyprland the default
+  profile stays up.
 - **Text beyond ASCII** — notifications, Korean key labels — is drawn with
   GNU Unifont (`unifont_t_korean2` from u8g2); the panel's chrome keeps its
   ASCII fonts. Approval prompts stay ASCII-only on purpose (see below).
@@ -236,7 +243,7 @@ and deskd, and it lives in `host/` so its tests run on the PC:
 ```sh
 make host-test      # desk-core + deskd unit tests
 make host-build     # host/target/x86_64-unknown-linux-gnu/release/deskd
-make e2e            # on the real panel: deck, notifications, Claude approval
+make e2e            # on the real panel: deck, notifications, app profiles, Claude approval
 host/e2e/obs.sh     # on the real panel, against the running OBS
 ```
 

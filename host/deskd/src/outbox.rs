@@ -104,7 +104,7 @@ mod tests {
 
     fn layout(generation: u32) -> Vec<HostMsg> {
         vec![
-            HostMsg::Begin { generation, pages: 1 },
+            HostMsg::Begin { generation, pages: 1, title: String::new() },
             HostMsg::Page { generation, index: 0, keys: vec![] },
             HostMsg::Commit { generation },
         ]

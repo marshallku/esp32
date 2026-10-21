@@ -46,11 +46,13 @@ pub struct Prompt {
 
 struct Layout {
     generation: u32,
+    title: String,
     pages: Vec<Vec<Key>>,
 }
 
 struct Staging {
     generation: u32,
+    title: String,
     pages: Vec<Option<Vec<Key>>>,
 }
 
@@ -98,7 +100,7 @@ pub enum View<'a> {
     Dashboard,
     Notes { notes: &'a VecDeque<Note>, scroll: usize },
     Stats { stats: Option<&'a Stats>, stale: bool, history: &'a History },
-    Deck { page: u8, keys: &'a [Key] },
+    Deck { page: u8, title: &'a str, keys: &'a [Key] },
     /// A button page was asked for but there is nothing to show on it.
     NoDeck { link_up: bool },
     Prompt(&'a Prompt),
@@ -169,7 +171,7 @@ impl App {
             }
             (ScreenId::Notes, _) => View::Notes { notes: &self.notes, scroll: self.notes_scroll },
             (ScreenId::Page(page), Some(layout)) if self.link_up => {
-                View::Deck { page, keys: &layout.pages[page as usize] }
+                View::Deck { page, title: &layout.title, keys: &layout.pages[page as usize] }
             }
             (ScreenId::Page(_), _) => View::NoDeck { link_up: self.link_up },
         }
@@ -241,11 +243,11 @@ impl App {
                 out.push(DeviceMsg::Screen { screen: self.screen });
             }
             HostMsg::Ping => out.push(DeviceMsg::Pong),
-            HostMsg::Begin { generation, pages } => {
+            HostMsg::Begin { generation, pages, title } => {
                 if pages == 0 || pages as usize > MAX_PAGES {
                     out.push(err("page count out of range"));
                 } else {
-                    self.staging = Some(Staging { generation, pages: (0..pages).map(|_| None).collect() });
+                    self.staging = Some(Staging { generation, title, pages: (0..pages).map(|_| None).collect() });
                 }
             }
             HostMsg::Page { generation, index, keys } => match &mut self.staging {
@@ -262,7 +264,7 @@ impl App {
                 Some(s) if s.generation == generation && s.pages.iter().all(Option::is_some) => {
                     let pages: Vec<Vec<Key>> = s.pages.into_iter().flatten().collect();
                     let count = pages.len() as u8;
-                    self.layout = Some(Layout { generation, pages });
+                    self.layout = Some(Layout { generation, title: s.title, pages });
                     if let ScreenId::Page(p) = self.screen {
                         // New keys under the finger, even on the same page.
                         self.surface_changed_at = now;
@@ -573,7 +575,7 @@ mod tests {
     fn ready() -> App {
         let mut app = App::new("test");
         app.on_host(HostMsg::Hello { proto: PROTO }, 0);
-        app.on_host(HostMsg::Begin { generation: 1, pages: 2 }, 0);
+        app.on_host(HostMsg::Begin { generation: 1, pages: 2, title: String::new() }, 0);
         app.on_host(HostMsg::Page { generation: 1, index: 0, keys: vec![key("A"), key("B")] }, 0);
         app.on_host(HostMsg::Page { generation: 1, index: 1, keys: vec![key("C")] }, 0);
         assert!(app.on_host(HostMsg::Commit { generation: 1 }, 0).is_empty());
@@ -614,7 +616,7 @@ mod tests {
     #[test]
     fn incomplete_layout_is_never_shown() {
         let mut app = ready();
-        app.on_host(HostMsg::Begin { generation: 2, pages: 2 }, 0);
+        app.on_host(HostMsg::Begin { generation: 2, pages: 2, title: String::new() }, 0);
         app.on_host(HostMsg::Page { generation: 2, index: 0, keys: vec![key("X")] }, 0);
         assert!(matches!(app.on_host(HostMsg::Commit { generation: 2 }, 0)[..], [DeviceMsg::Err { .. }]));
         match app.view() {
@@ -650,7 +652,7 @@ mod tests {
     fn a_touch_that_began_on_another_surface_does_nothing() {
         let mut app = ready();
         // Finger down at 100 on profile A's keys; profile B commits at 150.
-        app.on_host(HostMsg::Begin { generation: 2, pages: 1 }, 150);
+        app.on_host(HostMsg::Begin { generation: 2, pages: 1, title: String::new() }, 150);
         app.on_host(HostMsg::Page { generation: 2, index: 0, keys: vec![key("Danger")] }, 150);
         app.on_host(HostMsg::Commit { generation: 2 }, 150);
         assert!(app.on_gesture(at(tap_key(0), 100), 200).is_empty(), "release lands on keys never seen");
@@ -715,7 +717,7 @@ mod tests {
     fn commit_with_fewer_pages_moves_off_a_vanished_page() {
         let mut app = ready();
         app.on_host(HostMsg::Goto { screen: ScreenId::Page(1) }, 0);
-        app.on_host(HostMsg::Begin { generation: 2, pages: 1 }, 0);
+        app.on_host(HostMsg::Begin { generation: 2, pages: 1, title: String::new() }, 0);
         app.on_host(HostMsg::Page { generation: 2, index: 0, keys: vec![key("A")] }, 0);
         assert_eq!(app.on_host(HostMsg::Commit { generation: 2 }, 0), [screen(ScreenId::Page(0))]);
     }

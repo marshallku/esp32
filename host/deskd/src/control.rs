@@ -33,6 +33,8 @@ pub enum Request {
     /// From `deskd hook`: put a Claude Code permission request on the panel
     /// and answer with the button pressed.
     Approve { ask: Ask },
+    /// Test hook: behave as if a window of `class` had taken focus.
+    Focus { class: String },
 }
 
 pub fn socket_path() -> PathBuf {
@@ -74,6 +76,10 @@ async fn handle(stream: UnixStream, events: mpsc::Sender<Event>) -> Result<()> {
                 _ = read.read(&mut probe) => return Ok(()),
             };
             serde_json::json!({ "ok": true, "decision": decision })
+        }
+        Ok(Request::Focus { class }) => {
+            events.send(Event::Focus(class)).await.context("daemon shutting down")?;
+            serde_json::json!({ "ok": true })
         }
         Ok(req) => {
             let (tx, rx) = oneshot::channel();

@@ -20,9 +20,28 @@ pub struct Config {
     /// Optional; OBS keys work with the defaults.
     #[serde(default)]
     pub obs: ObsConfig,
+    /// The default profile: shown whenever the focused app has none.
+    #[serde(rename = "page")]
+    pub pages: Vec<Page>,
+    /// Per-app profiles, like the Stream Deck's: while a window of one of
+    /// `class` has focus, its pages replace the default ones.
+    #[serde(rename = "app", default)]
+    pub apps: Vec<AppProfile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppProfile {
+    /// Shown in the panel's status strip.
+    pub name: String,
+    /// Window classes (Hyprland `class`), matched case-insensitively.
+    pub class: Vec<String>,
     #[serde(rename = "page")]
     pub pages: Vec<Page>,
 }
+
+/// Longest profile name the status strip has room for.
+pub const PROFILE_NAME_MAX: usize = 12;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -93,10 +112,27 @@ pub fn load(path: &Path) -> Result<Config> {
 /// caught here, at startup, rather than showing up as an `err` line later.
 pub fn parse(text: &str) -> Result<Config> {
     let config: Config = toml::from_str(text)?;
-    if config.pages.is_empty() || config.pages.len() > MAX_PAGES {
-        bail!("need 1..={} pages, got {}", MAX_PAGES, config.pages.len());
+    validate_pages(&config.pages).context("default profile")?;
+    for app in &config.apps {
+        let name = &app.name;
+        if name.is_empty() || !name.is_ascii() || name.len() > PROFILE_NAME_MAX {
+            bail!("app profile name '{name}' must be 1..={PROFILE_NAME_MAX} ASCII characters for the status strip");
+        }
+        if app.class.is_empty() || app.class.iter().any(String::is_empty) {
+            bail!("app profile '{name}' needs non-empty window classes");
+        }
+        validate_pages(&app.pages).with_context(|| format!("app profile '{name}'"))?;
     }
-    for page in &config.pages {
+    Ok(config)
+}
+
+/// One profile's pages. A `page` action's index refers to this profile's own
+/// pages, so it is checked against them.
+fn validate_pages(pages: &[Page]) -> Result<()> {
+    if pages.is_empty() || pages.len() > MAX_PAGES {
+        bail!("need 1..={} pages, got {}", MAX_PAGES, pages.len());
+    }
+    for page in pages {
         if page.keys.len() > KEYS_PER_PAGE {
             bail!("page '{}' has {} keys, the panel shows {}", page.name, page.keys.len(), KEYS_PER_PAGE);
         }
@@ -120,7 +156,7 @@ pub fn parse(text: &str) -> Result<Config> {
                     states::OBS_MUTED
                 );
             }
-            key.action.validate(config.pages.len()).with_context(|| format!("key '{}'", key.label))?;
+            key.action.validate(pages.len()).with_context(|| format!("key '{}'", key.label))?;
             for label in [Some(&key.label), key.label_on.as_ref()].into_iter().flatten() {
                 if !text::label_fits(label) {
                     bail!("label '{}' does not fit the two lines a key shows", label);
@@ -138,7 +174,7 @@ pub fn parse(text: &str) -> Result<Config> {
             bail!("page '{}' encodes to {} bytes, over the {}-byte line limit", page.name, size, MAX_LINE);
         }
     }
-    Ok(config)
+    Ok(())
 }
 
 /// The page as its longest possible wire line: every key showing whichever of
@@ -159,8 +195,29 @@ fn worst_case_page(page: &Page) -> HostMsg {
 }
 
 impl Config {
+    /// Every key of every profile: OBS support is started once, at launch,
+    /// so it has to cover profiles that are not active yet.
     fn keys(&self) -> impl Iterator<Item = &KeyConfig> {
-        self.pages.iter().flat_map(|p| &p.keys)
+        self.pages.iter().chain(self.apps.iter().flat_map(|a| &a.pages)).flat_map(|p| &p.keys)
+    }
+
+    /// The profile for a focused window class: the first `[[app]]` listing
+    /// it, or `None` for the default.
+    pub fn profile_for(&self, class: &str) -> Option<usize> {
+        // No window focused (an empty workspace) is always the default.
+        if class.is_empty() {
+            return None;
+        }
+        self.apps.iter().position(|a| a.class.iter().any(|c| c.eq_ignore_ascii_case(class)))
+    }
+
+    pub fn pages(&self, profile: Option<usize>) -> &[Page] {
+        profile.and_then(|i| self.apps.get(i)).map_or(&self.pages, |a| &a.pages)
+    }
+
+    /// The status strip's title for a profile; empty for the default.
+    pub fn title(&self, profile: Option<usize>) -> &str {
+        profile.and_then(|i| self.apps.get(i)).map_or("", |a| &a.name)
     }
 
     /// Whether any key needs OBS, so deskd only connects when it is used.
@@ -241,6 +298,49 @@ action = { type = "page", index = 0 }
         // Quotes double on the wire; the caps are set so even that fits.
         parse(&full_page(&"x".repeat(LABEL_MAX))).unwrap();
         parse(&full_page(&"\\\"".repeat(LABEL_MAX))).unwrap();
+    }
+
+    const APPS: &str = r##"
+[[page]]
+name = "default"
+[[page.key]]
+label = "Default"
+action = { type = "dashboard" }
+
+[[app]]
+name = "Firefox"
+class = ["firefox", "librewolf"]
+[[app.page]]
+name = "browse"
+[[app.page.key]]
+label = "Back"
+action = { type = "keys", mods = "ALT", key = "Left" }
+[[app.page.key]]
+label = "Scene"
+state = "obs-scene:Desk"
+action = { type = "obs-scene", scene = "Desk" }
+"##;
+
+    #[test]
+    fn app_profiles_match_by_class_and_count_for_obs() {
+        let config = parse(APPS).unwrap();
+        assert_eq!(config.profile_for("firefox"), Some(0));
+        assert_eq!(config.profile_for("LibreWolf"), Some(0), "case-insensitive");
+        assert_eq!(config.profile_for("kitty"), None);
+        assert_eq!(config.profile_for(""), None, "an empty workspace is the default");
+        assert_eq!(config.pages(Some(0))[0].keys[0].label, "Back");
+        assert_eq!(config.pages(None)[0].keys[0].label, "Default");
+        assert_eq!(config.title(Some(0)), "Firefox");
+        assert!(config.uses_obs(), "OBS keys in an inactive profile still start OBS support");
+    }
+
+    #[test]
+    fn app_profiles_are_validated_like_the_default() {
+        assert!(parse(&APPS.replace("\"Firefox\"", "\"A very long profile name\"")).is_err());
+        assert!(parse(&APPS.replace("class = [\"firefox\", \"librewolf\"]", "class = []")).is_err());
+        assert!(parse(&APPS.replace("class = [\"firefox\", \"librewolf\"]", "class = [\"\"]")).is_err());
+        let bad_page = APPS.replace("action = { type = \"keys\", mods = \"ALT\", key = \"Left\" }", "action = { type = \"page\", index = 1 }");
+        assert!(parse(&bad_page).is_err(), "page index beyond the app profile's own pages");
     }
 
     #[test]

@@ -44,6 +44,8 @@ pub enum Event {
     Approve(Ask, oneshot::Sender<Decision>),
     Stats(Stats),
     Note(Incoming),
+    /// The focused window's class changed (Hyprland, or injected for tests).
+    Focus(String),
 }
 
 /// Waits for the panel, runs a session, and starts over when it ends. Never
@@ -104,6 +106,10 @@ async fn idle(deck: &mut Deck, notes: &mut Notes, events: &mut mpsc::Receiver<Ev
                 Event::Note(incoming) => {
                     notes.add(incoming, local_hm());
                 }
+                // Recorded so the next push shows the right profile.
+                Event::Focus(class) => {
+                    deck.focus(&class);
+                }
             },
         }
     }
@@ -119,6 +125,12 @@ struct Session {
     /// Set once the panel has answered `hello` with our protocol version.
     fw: Option<String>,
     screen: Option<ScreenId>,
+    /// The screen the last queued `goto` will land on, while any `goto` is
+    /// still queued or awaiting its ack. `screen` alone lags behind it.
+    pending_goto: Option<ScreenId>,
+    /// Gotos sent or queued but not yet acked. Cleared by acks, not by
+    /// `screen` reports: a goto to the screen already showing reports nothing.
+    gotos_outstanding: u32,
     obs: Option<obs::Handle>,
     /// Dropped with the session, which answers every waiting hook with
     /// "terminal": a panel that went away cannot have approved anything.
@@ -147,6 +159,8 @@ impl Session {
             clock: String::new(),
             fw: None,
             screen: None,
+            pending_goto: None,
+            gotos_outstanding: 0,
             obs,
             approvals: Approvals::default(),
         }
@@ -208,6 +222,10 @@ impl Session {
                 // start clean: whatever was queued or in flight was for a
                 // panel that no longer exists.
                 self.outbox.clear();
+                // Queued gotos went with it; the panel reports its screen in
+                // its hello answer.
+                self.pending_goto = None;
+                self.gotos_outstanding = 0;
                 // Except our own hello: if that is what is in flight, its ack
                 // is still coming, and dropping it here would let that ack be
                 // taken for the next line's.
@@ -224,14 +242,24 @@ impl Session {
                     self.outbox.urgent(prompt);
                 }
             }
-            DeviceMsg::Ack => self.in_flight = None,
+            DeviceMsg::Ack => {
+                // The panel reports a screen change before acking the goto
+                // that caused it, so once the last goto is acked `screen` is
+                // current again.
+                if self.in_flight.take().is_some_and(|f| matches!(f.msg, HostMsg::Goto { .. })) {
+                    self.gotos_outstanding = self.gotos_outstanding.saturating_sub(1);
+                    if self.gotos_outstanding == 0 {
+                        self.pending_goto = None;
+                    }
+                }
+            }
             DeviceMsg::Pong => {}
             DeviceMsg::Press { generation, page, index, long } => match deck.resolve(generation, page, index) {
                 Some(action) => {
                     eprintln!("press {page}/{index}{}: {action:?}", if long { " (long)" } else { "" });
                     match action.effect() {
                         Effect::Run(argv) => actions::spawn(argv),
-                        Effect::Goto(screen) => self.outbox.urgent(HostMsg::Goto { screen }),
+                        Effect::Goto(screen) => self.goto(screen),
                         Effect::Obs(cmd) => match &self.obs {
                             Some(obs) => obs.send(cmd),
                             None => eprintln!("OBS key pressed but OBS support is not running"),
@@ -291,6 +319,22 @@ impl Session {
                     self.outbox.note(HostMsg::Note { note, live: true });
                 }
             }
+            Event::Focus(class) => {
+                if deck.focus(&class) {
+                    eprintln!("profile: {} (focus {class})", if deck.profile_name().is_empty() { "default" } else { deck.profile_name() });
+                    if self.fw.is_some() {
+                        // A new profile opens on its first page, like a
+                        // Stream Deck switching profiles. Judged by where the
+                        // panel is headed, not where it last said it was: a
+                        // page action still in the queue would otherwise
+                        // carry the new profile to that page.
+                        if matches!(self.pending_goto.or(self.screen), Some(ScreenId::Page(_))) {
+                            self.goto(ScreenId::Page(0));
+                        }
+                        self.outbox.push_layout();
+                    }
+                }
+            }
             Event::Control(req, reply) => {
                 let answer = match req {
                     Request::Status => json!({
@@ -301,6 +345,7 @@ impl Session {
                         "screen": self.screen,
                         "notes": notes.len(),
                         "unread": notes.unread(),
+                        "profile": deck.profile_name(),
                     }),
                     Request::States => json!({ "ok": true, "states": deck.states() }),
                     // control::handle turns these into Event::Approve; one
@@ -311,6 +356,8 @@ impl Session {
                         json!({ "ok": true })
                     }
                     Request::Inject { .. } => json!({ "ok": false, "error": "panel not ready" }),
+                    // control::handle turns these into Event::Focus.
+                    Request::Focus { .. } => json!({ "ok": false, "error": "focus must arrive as Event::Focus" }),
                     Request::Reload => match config::load(config_path) {
                         Ok(config) => {
                             deck.replace(config);
@@ -369,6 +416,12 @@ impl Session {
             self.outbox.urgent(msg);
         }
         Ok(())
+    }
+
+    fn goto(&mut self, screen: ScreenId) {
+        self.pending_goto = Some(screen);
+        self.gotos_outstanding += 1;
+        self.outbox.urgent(HostMsg::Goto { screen });
     }
 
     fn queue_clock(&mut self) {

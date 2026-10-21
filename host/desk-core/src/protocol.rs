@@ -137,7 +137,14 @@ pub enum Gesture {
 pub enum HostMsg {
     Hello { proto: u16 },
     Ping,
-    Begin { generation: u32, pages: u8 },
+    /// `title` names the profile (the default one, or the focused app's) for
+    /// the panel's status strip.
+    Begin {
+        generation: u32,
+        pages: u8,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        title: String,
+    },
     Page { generation: u32, index: u8, keys: Vec<Key> },
     Commit { generation: u32 },
     /// Live update of one key in the active layout.

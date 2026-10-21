@@ -165,3 +165,46 @@ label = "Home"
 sub = "dashboard"
 color = "#5e4a2a"
 action = { type = "dashboard" }
+
+# Per-app profiles: while a window of one of `class` has focus (Hyprland's
+# `class`, see `hyprctl activewindow`), these pages replace the ones above.
+# The first [[app]] that lists the class wins; `page` actions count within
+# the profile's own pages.
+[[app]]
+name = "Firefox"
+class = ["firefox"]
+
+[[app.page]]
+name = "browse"
+
+[[app.page.key]]
+label = "Back"
+color = "#2a3f5f"
+action = { type = "keys", mods = "ALT", key = "Left" }
+
+[[app.page.key]]
+label = "Forward"
+color = "#2a3f5f"
+action = { type = "keys", mods = "ALT", key = "Right" }
+
+[[app.page.key]]
+label = "New tab"
+color = "#333333"
+action = { type = "keys", mods = "CTRL", key = "T" }
+
+[[app.page.key]]
+label = "Close tab"
+color = "#6a2a2a"
+action = { type = "keys", mods = "CTRL", key = "W" }
+
+[[app.page.key]]
+label = "Reopen"
+sub = "closed tab"
+color = "#333333"
+action = { type = "keys", mods = "CTRL SHIFT", key = "T" }
+
+[[app.page.key]]
+label = "Home"
+sub = "dashboard"
+color = "#5e4a2a"
+action = { type = "dashboard" }
