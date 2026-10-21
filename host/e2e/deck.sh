@@ -13,6 +13,8 @@ check "swipe left from the dashboard opens the stats screen" '[ "$(screen)" = st
 sleep 2.5
 check "stats lines are accepted by the panel" '! grep -qE "bad host line|panel rejected" $OUT/deskd.log'
 swipe left
+check "next swipe opens the notifications" '[ "$(screen)" = notes ]'
+swipe left
 check "next swipe opens page 0" '[ "$(screen)" = p0 ]'
 tap $KEY0
 check "tap on key 0 runs its shell action" '[ -s $OUT/pressed-a ]'

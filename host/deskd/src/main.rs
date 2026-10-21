@@ -16,6 +16,8 @@ mod approval;
 mod config;
 mod control;
 mod deck;
+mod notes;
+mod notify;
 mod obs;
 mod outbox;
 mod serial;
@@ -95,6 +97,7 @@ async fn run() -> Result<()> {
     let deck = deck::Deck::new(config);
     tokio::spawn(states::poll_audio(events_tx.clone()));
     tokio::spawn(vitals::run(events_tx.clone()));
+    tokio::spawn(notify::run(events_tx.clone()));
     let control = tokio::spawn(control::serve(events_tx));
     let session = tokio::spawn(session::run(deck, config_path, events_rx, obs));
 

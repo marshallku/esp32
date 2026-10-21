@@ -12,7 +12,8 @@ use crate::{
     geometry,
     gesture::Event,
     protocol::{
-        DeviceMsg, Dir, Gesture, HostMsg, KEYS_PER_PAGE, Key, MAX_BUTTONS, MAX_PAGES, PROTO, ScreenId, Stats,
+        DeviceMsg, Dir, Gesture, HostMsg, KEYS_PER_PAGE, Key, MAX_BUTTONS, MAX_NOTES, MAX_PAGES, Note, PROTO,
+        ScreenId, Stats, URGENCY_CRITICAL,
     },
 };
 
@@ -28,6 +29,12 @@ pub const IDLE_MS: u64 = 60_000;
 pub const STATS_STALE_MS: u64 = 5_000;
 /// Samples kept for the stats screen's history graphs.
 pub const HISTORY_LEN: usize = 120;
+/// How long a new notification's banner covers the top of the screen.
+pub const BANNER_MS: u64 = 4_000;
+/// Half a blink of the border: on for this long, then off for as long.
+pub const BLINK_MS: u64 = 300;
+/// Blinks for an ordinary notification. A critical one blinks until seen.
+pub const BLINKS: u64 = 3;
 
 pub struct Prompt {
     pub id: u64,
@@ -72,9 +79,24 @@ impl History {
     }
 }
 
+/// The notification feedback drawn on top of whatever screen is up.
+#[derive(Default)]
+pub struct Overlay<'a> {
+    pub banner: Option<&'a Note>,
+    /// Border lit this frame; `Some(true)` for a critical notification.
+    pub border: Option<bool>,
+}
+
+struct Alert {
+    id: u64,
+    since: u64,
+    critical: bool,
+}
+
 /// What to draw.
 pub enum View<'a> {
     Dashboard,
+    Notes { notes: &'a VecDeque<Note>, scroll: usize },
     Stats { stats: Option<&'a Stats>, stale: bool, history: &'a History },
     Deck { page: u8, keys: &'a [Key] },
     /// A button page was asked for but there is nothing to show on it.
@@ -94,6 +116,12 @@ pub struct App {
     /// Whether the stats screen was last drawn as stale.
     stats_stale: bool,
     history: History,
+    /// Newest first.
+    notes: VecDeque<Note>,
+    notes_scroll: usize,
+    alert: Option<Alert>,
+    banner_on: bool,
+    border_on: bool,
     /// When what lies under a finger last changed: the screen, the layout, a
     /// modal. A touch that began before this was aimed at something else and
     /// must not act on what is there now.
@@ -117,6 +145,11 @@ impl App {
             stats_at: None,
             stats_stale: false,
             history: History::default(),
+            notes: VecDeque::new(),
+            notes_scroll: 0,
+            alert: None,
+            banner_on: false,
+            border_on: false,
             surface_changed_at: 0,
             last_host: None,
             last_input: 0,
@@ -134,10 +167,11 @@ impl App {
             (ScreenId::Stats, _) => {
                 View::Stats { stats: self.stats.as_ref(), stale: self.stats_stale, history: &self.history }
             }
+            (ScreenId::Notes, _) => View::Notes { notes: &self.notes, scroll: self.notes_scroll },
             (ScreenId::Page(page), Some(layout)) if self.link_up => {
                 View::Deck { page, keys: &layout.pages[page as usize] }
             }
-            (ScreenId::Page(_) | ScreenId::Notes, _) => View::NoDeck { link_up: self.link_up },
+            (ScreenId::Page(_), _) => View::NoDeck { link_up: self.link_up },
         }
     }
 
@@ -145,10 +179,27 @@ impl App {
         self.screen
     }
 
+    /// Notification feedback to draw over the screen. Nothing while a prompt
+    /// is up: an approval must never be partly covered.
+    pub fn overlay(&self) -> Overlay<'_> {
+        if self.prompt.is_some() {
+            return Overlay::default();
+        }
+        let alert = self.alert.as_ref();
+        Overlay {
+            banner: alert.filter(|_| self.banner_on).and_then(|a| self.notes.iter().find(|n| n.id == a.id)),
+            border: alert.filter(|_| self.border_on).map(|a| a.critical),
+        }
+    }
+
+    pub fn unread(&self) -> usize {
+        self.notes.iter().filter(|n| n.unread).count()
+    }
+
     /// Every screen in swipe order.
     pub fn screens(&self) -> Vec<ScreenId> {
         let pages = self.page_count().max(1) as u8;
-        [ScreenId::Dash, ScreenId::Stats].into_iter().chain((0..pages).map(ScreenId::Page)).collect()
+        [ScreenId::Dash, ScreenId::Stats, ScreenId::Notes].into_iter().chain((0..pages).map(ScreenId::Page)).collect()
     }
 
     /// Pages in the active layout; 0 before the host has pushed one.
@@ -284,6 +335,45 @@ impl App {
                     self.dirty = true;
                 }
             }
+            HostMsg::NotesReset => {
+                self.notes.clear();
+                self.notes_scroll = 0;
+                self.alert = None;
+                if self.screen == ScreenId::Notes {
+                    self.surface_changed_at = now;
+                }
+                self.dirty = true;
+            }
+            HostMsg::Note { mut note, live } => {
+                let seen_now = live && self.screen == ScreenId::Notes;
+                if seen_now {
+                    note.unread = false;
+                }
+                let id = note.id;
+                let critical = note.urgency >= URGENCY_CRITICAL;
+                // Same id: an update in place (a progress notification, a
+                // resend after reconnect) keeps its position.
+                match self.notes.iter_mut().find(|n| n.id == id) {
+                    Some(slot) => *slot = note,
+                    None => {
+                        self.notes.push_front(note);
+                        self.notes.truncate(MAX_NOTES);
+                    }
+                }
+                if live && !seen_now {
+                    // A critical alert still waiting to be seen stays
+                    // critical: an ordinary one arriving after it must not
+                    // turn its persistent blink into three blinks.
+                    let critical = critical || self.alert.as_ref().is_some_and(|a| a.critical);
+                    self.alert = Some(Alert { id, since: now, critical });
+                    self.update_overlay(now);
+                }
+                if self.screen == ScreenId::Notes {
+                    // Rows moved under any finger on the list.
+                    self.surface_changed_at = now;
+                }
+                self.dirty = true;
+            }
             HostMsg::Inject { gesture } => out.extend(self.on_gesture(Event { gesture, down_at: now }, now)),
         }
         out
@@ -313,6 +403,55 @@ impl App {
             return out;
         }
 
+        if self.banner_on
+            && let Gesture::Tap { x, y } = ev.gesture
+            && geometry::BANNER.contains(x, y)
+        {
+            self.set_screen(ScreenId::Notes, now, &mut out);
+            return out;
+        }
+
+        if self.screen == ScreenId::Notes {
+            match ev.gesture {
+                Gesture::Swipe { dir: Dir::Up } => {
+                    if self.notes_scroll + geometry::NOTE_ROWS < self.notes.len() {
+                        self.notes_scroll += 1;
+                        self.dirty = true;
+                    }
+                    return out;
+                }
+                Gesture::Swipe { dir: Dir::Down } => {
+                    if self.notes_scroll > 0 {
+                        self.notes_scroll -= 1;
+                        self.dirty = true;
+                    }
+                    return out;
+                }
+                Gesture::Tap { x, y } if geometry::CLEAR_BUTTON.contains(x, y) => {
+                    if !self.notes.is_empty() {
+                        self.notes.clear();
+                        self.notes_scroll = 0;
+                        self.surface_changed_at = now;
+                        self.dirty = true;
+                        out.push(DeviceMsg::NotesClear);
+                    }
+                    return out;
+                }
+                Gesture::Long { y, .. } => {
+                    if let Some(row) = geometry::note_row_at(y)
+                        && let Some(note) = self.notes.remove(self.notes_scroll + row)
+                    {
+                        self.notes_scroll = self.notes_scroll.min(self.notes.len().saturating_sub(geometry::NOTE_ROWS));
+                        self.surface_changed_at = now;
+                        self.dirty = true;
+                        out.push(DeviceMsg::NoteDismiss { id: note.id });
+                    }
+                    return out;
+                }
+                _ => {}
+            }
+        }
+
         match ev.gesture {
             Gesture::Swipe { dir } => {
                 let screens = self.screens();
@@ -320,6 +459,7 @@ impl App {
                 let next = match dir {
                     Dir::Left => current.checked_add(1),
                     Dir::Right => current.checked_sub(1),
+                    Dir::Up | Dir::Down => None,
                 };
                 if let Some(&screen) = next.and_then(|i| screens.get(i)) {
                     self.set_screen(screen, now, &mut out);
@@ -359,7 +499,37 @@ impl App {
             self.stats_stale = stale;
             self.dirty = true;
         }
+        self.update_overlay(now);
         out
+    }
+
+    /// Banner and border state for `now`. Redraws only when either flips.
+    fn update_overlay(&mut self, now: u64) {
+        let (banner, border) = match &self.alert {
+            Some(a) => {
+                let elapsed = now.saturating_sub(a.since);
+                let phase = elapsed / BLINK_MS;
+                let blinking = a.critical || phase < 2 * BLINKS;
+                (elapsed < BANNER_MS, blinking && phase.is_multiple_of(2))
+            }
+            None => (false, false),
+        };
+        if banner != self.banner_on {
+            self.banner_on = banner;
+            // The banner covers part of the screen; a touch that began on
+            // either side of it appearing or going belongs to neither.
+            self.surface_changed_at = now;
+            self.dirty = true;
+        }
+        if border != self.border_on {
+            self.border_on = border;
+            self.dirty = true;
+        }
+        // An ordinary alert is finished once it has stopped blinking and its
+        // banner is gone; a critical one waits for the notes screen.
+        if self.alert.as_ref().is_some_and(|a| !a.critical) && !banner && now.saturating_sub(self.alert.as_ref().map_or(0, |a| a.since)) >= 2 * BLINKS * BLINK_MS {
+            self.alert = None;
+        }
     }
 
     fn set_screen(&mut self, screen: ScreenId, now: u64, out: &mut Vec<DeviceMsg>) {
@@ -371,6 +541,16 @@ impl App {
                 self.stats_stale = self.stats_at.is_none_or(|t| now - t > STATS_STALE_MS);
             }
             out.push(DeviceMsg::Screen { screen });
+            if screen == ScreenId::Notes {
+                // Opening the list is seeing it: unread marks go, and a
+                // critical notification stops blinking.
+                for n in &mut self.notes {
+                    n.unread = false;
+                }
+                self.alert = None;
+                self.update_overlay(now);
+                out.push(DeviceMsg::NotesSeen);
+            }
         }
     }
 }
@@ -459,9 +639,11 @@ mod tests {
         assert_eq!(app.on_gesture(swipe(Dir::Left), 0), [screen(ScreenId::Page(1))]);
         assert!(app.on_gesture(swipe(Dir::Left), 0).is_empty(), "already on the last page");
         app.on_gesture(swipe(Dir::Right), 0);
+        assert_eq!(app.on_gesture(swipe(Dir::Right), 0), [screen(ScreenId::Notes), DeviceMsg::NotesSeen]);
         assert_eq!(app.on_gesture(swipe(Dir::Right), 0), [screen(ScreenId::Stats)]);
         assert_eq!(app.on_gesture(swipe(Dir::Right), 0), [screen(ScreenId::Dash)]);
         assert!(app.on_gesture(swipe(Dir::Right), 0).is_empty(), "dashboard is the first screen");
+        assert!(app.on_gesture(swipe(Dir::Up), 0).is_empty(), "vertical swipes do not change screens");
     }
 
     #[test]
@@ -542,7 +724,6 @@ mod tests {
     fn goto_rejects_screens_that_do_not_exist() {
         let mut app = ready();
         assert!(matches!(app.on_host(HostMsg::Goto { screen: ScreenId::Page(5) }, 0)[..], [DeviceMsg::Err { .. }]));
-        assert!(matches!(app.on_host(HostMsg::Goto { screen: ScreenId::Notes }, 0)[..], [DeviceMsg::Err { .. }]));
     }
 
     #[test]
@@ -561,6 +742,143 @@ mod tests {
         app.tick(8_000 + STATS_STALE_MS);
         assert!(app.take_dirty(), "crossing into stale redraws");
         assert!(matches!(app.view(), View::Stats { stale: true, .. }));
+    }
+
+    fn note(id: u64, urgency: u8) -> Note {
+        Note { id, app: "app".into(), summary: "s".into(), urgency, time: "10:00".into(), unread: true, ..Default::default() }
+    }
+
+    fn overlay(app: &App) -> (bool, Option<bool>) {
+        let o = app.overlay();
+        (o.banner.is_some(), o.border)
+    }
+
+    #[test]
+    fn a_live_note_shows_a_banner_and_blinks_three_times() {
+        let mut app = ready();
+        app.on_host(HostMsg::Note { note: note(1, 1), live: true }, 1_000);
+        assert_eq!(overlay(&app), (true, Some(false)));
+        app.tick(1_000 + BLINK_MS);
+        assert_eq!(overlay(&app).1, None, "off half of the first blink");
+        app.tick(1_000 + 2 * BLINK_MS);
+        assert_eq!(overlay(&app).1, Some(false));
+        app.tick(1_000 + 2 * BLINKS * BLINK_MS);
+        assert_eq!(overlay(&app), (true, None), "blinking over, banner still up");
+        app.tick(1_000 + BANNER_MS);
+        assert_eq!(overlay(&app), (false, None));
+        app.tick(1_000 + BANNER_MS + 10 * BLINK_MS);
+        assert_eq!(overlay(&app), (false, None), "an ordinary alert does not come back");
+        assert_eq!(app.unread(), 1);
+    }
+
+    #[test]
+    fn a_critical_note_blinks_until_the_notes_screen_is_opened() {
+        let mut app = ready();
+        app.on_host(HostMsg::Note { note: note(1, URGENCY_CRITICAL), live: true }, 0);
+        // An even phase number is an "on" half of a blink.
+        app.tick(120 * BLINK_MS);
+        assert_eq!(overlay(&app), (false, Some(true)), "long after the banner, still blinking");
+        app.on_host(HostMsg::Goto { screen: ScreenId::Notes }, 121 * BLINK_MS);
+        app.tick(122 * BLINK_MS);
+        assert_eq!(overlay(&app), (false, None));
+        assert_eq!(app.unread(), 0);
+    }
+
+    #[test]
+    fn tapping_the_banner_opens_the_notes_and_a_held_finger_does_not() {
+        let mut app = ready();
+        let r = geometry::BANNER;
+        let on_banner = Gesture::Tap { x: r.x + 10, y: r.y + 10 };
+        app.on_host(HostMsg::Note { note: note(1, 1), live: true }, 1_000);
+        assert!(app.on_gesture(at(on_banner, 900), 1_100).is_empty(), "finger was down before the banner");
+        assert_eq!(app.on_gesture(at(on_banner, 1_200), 1_250), [screen(ScreenId::Notes), DeviceMsg::NotesSeen]);
+
+        // Once the banner is gone, the same spot is the status strip again.
+        app.on_host(HostMsg::Goto { screen: ScreenId::Page(0) }, 2_000);
+        app.on_host(HostMsg::Note { note: note(2, 1), live: true }, 3_000);
+        app.tick(3_000 + BANNER_MS);
+        assert!(app.on_gesture(at(on_banner, 3_000 + BANNER_MS - 50), 3_000 + BANNER_MS + 50).is_empty());
+    }
+
+    #[test]
+    fn notes_update_in_place_resync_quietly_and_cap() {
+        let mut app = ready();
+        app.on_host(HostMsg::Note { note: note(1, 1), live: true }, 0);
+        app.on_host(HostMsg::Note { note: note(2, 1), live: true }, 0);
+        let mut updated = note(1, 1);
+        updated.summary = "progress 50%".into();
+        app.on_host(HostMsg::Note { note: updated, live: true }, 0);
+        let ids: Vec<u64> = app.notes.iter().map(|n| n.id).collect();
+        assert_eq!(ids, [2, 1], "an update keeps its place");
+
+        app.on_host(HostMsg::NotesReset, 10_000);
+        app.tick(10_000);
+        for id in 0..(MAX_NOTES as u64 + 5) {
+            let mut n = note(id, 1);
+            n.unread = id % 2 == 0;
+            app.on_host(HostMsg::Note { note: n, live: false }, 10_000);
+        }
+        assert_eq!(app.notes.len(), MAX_NOTES);
+        assert_eq!(app.notes[0].id, MAX_NOTES as u64 + 4, "newest first");
+        assert_eq!(overlay(&app), (false, None), "a resync is not news");
+        assert!(app.unread() > 0, "unread state survives a resync");
+    }
+
+    #[test]
+    fn notes_screen_scrolls_dismisses_and_clears() {
+        let mut app = ready();
+        for id in 0..8 {
+            app.on_host(HostMsg::Note { note: note(id, 1), live: false }, 0);
+        }
+        app.on_host(HostMsg::Goto { screen: ScreenId::Notes }, 0);
+        let swipe = |dir| at(Gesture::Swipe { dir }, 10);
+        app.on_gesture(swipe(Dir::Up), 10);
+        assert_eq!(app.notes_scroll, 1);
+        for _ in 0..20 {
+            app.on_gesture(swipe(Dir::Up), 10);
+        }
+        assert_eq!(app.notes_scroll, 8 - geometry::NOTE_ROWS, "stops with the last row at the bottom");
+
+        let first_row_y = geometry::NOTES_TOP + 5;
+        let shown = app.notes[app.notes_scroll].id;
+        let out = app.on_gesture(at(Gesture::Long { x: 100, y: first_row_y }, 20), 20);
+        assert_eq!(out, [DeviceMsg::NoteDismiss { id: shown }]);
+        assert_eq!(app.notes.len(), 7);
+
+        let c = geometry::CLEAR_BUTTON;
+        let out = app.on_gesture(at(Gesture::Tap { x: c.x + 5, y: c.y + 5 }, 30), 30);
+        assert_eq!(out, [DeviceMsg::NotesClear]);
+        assert!(app.notes.is_empty());
+    }
+
+    #[test]
+    fn an_ordinary_note_does_not_downgrade_a_pending_critical_one() {
+        let mut app = ready();
+        app.on_host(HostMsg::Note { note: note(1, URGENCY_CRITICAL), live: true }, 0);
+        app.on_host(HostMsg::Note { note: note(2, 1), live: true }, 1_000);
+        // An even phase long after three blinks would have ended.
+        app.tick(1_000 + 100 * BLINK_MS);
+        assert_eq!(overlay(&app), (false, Some(true)));
+    }
+
+    #[test]
+    fn a_note_arriving_under_a_held_row_cancels_the_hold() {
+        let mut app = ready();
+        app.on_host(HostMsg::Note { note: note(1, 1), live: false }, 0);
+        app.on_host(HostMsg::Goto { screen: ScreenId::Notes }, 0);
+        // Finger down on row 0 (note 1) at 100; note 2 arrives and takes row 0.
+        app.on_host(HostMsg::Note { note: note(2, 1), live: true }, 200);
+        let row0 = geometry::NOTES_TOP + 5;
+        assert!(app.on_gesture(at(Gesture::Long { x: 100, y: row0 }, 100), 700).is_empty());
+        assert_eq!(app.notes.len(), 2);
+    }
+
+    #[test]
+    fn a_prompt_hides_notification_feedback() {
+        let mut app = ready();
+        app.on_host(HostMsg::Note { note: note(1, URGENCY_CRITICAL), live: true }, 0);
+        app.on_host(HostMsg::Prompt { id: 9, title: "t".into(), body: "b".into(), buttons: vec!["OK".into()] }, 10);
+        assert_eq!(overlay(&app), (false, None));
     }
 
     #[test]

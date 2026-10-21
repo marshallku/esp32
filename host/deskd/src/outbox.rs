@@ -10,8 +10,9 @@
 //! 3. a new layout: only a flag until its turn, then built from the deck's
 //!    current state — so ten focus changes in a row cost one transfer, and
 //!    key updates queued before it are dropped because it already holds them
-//! 4. key updates, one per key, newest wins
-//! 5. the clock, then stats: newest only
+//! 4. notifications, in arrival order (a resync replaces whatever was queued)
+//! 5. key updates, one per key, newest wins
+//! 6. the clock, then stats: newest only
 
 use std::collections::VecDeque;
 
@@ -22,6 +23,7 @@ pub struct Outbox {
     urgent: VecDeque<HostMsg>,
     layout: VecDeque<HostMsg>,
     needs_push: bool,
+    notes: VecDeque<HostMsg>,
     keys: Vec<HostMsg>,
     time: Option<HostMsg>,
     stats: Option<HostMsg>,
@@ -36,6 +38,15 @@ impl Outbox {
     pub fn push_layout(&mut self) {
         self.needs_push = true;
         self.keys.clear();
+    }
+
+    pub fn note(&mut self, msg: HostMsg) {
+        self.notes.push_back(msg);
+    }
+
+    /// Replaces any queued notifications with a full resync.
+    pub fn notes_resync(&mut self, msgs: Vec<HostMsg>) {
+        self.notes = msgs.into();
     }
 
     pub fn key(&mut self, msg: HostMsg) {
@@ -73,6 +84,9 @@ impl Outbox {
             self.layout.extend(render());
         }
         if let Some(msg) = self.layout.pop_front() {
+            return Some(msg);
+        }
+        if let Some(msg) = self.notes.pop_front() {
             return Some(msg);
         }
         if !self.keys.is_empty() {
@@ -149,6 +163,19 @@ mod tests {
         o.push_layout();
         o.key(key(0, "b"));
         assert_eq!(drain(&mut o, 0), layout(1));
+    }
+
+    #[test]
+    fn a_resync_replaces_queued_notes_and_notes_precede_keys() {
+        let note = |id| HostMsg::Note { note: desk_core::protocol::Note { id, ..Default::default() }, live: true };
+        let mut o = Outbox::default();
+        o.key(key(0, "k"));
+        o.note(note(1));
+        o.notes_resync(vec![HostMsg::NotesReset, note(2)]);
+        let sent = drain(&mut o, 0);
+        assert!(matches!(sent[0], HostMsg::NotesReset));
+        assert!(matches!(&sent[1], HostMsg::Note { note, .. } if note.id == 2));
+        assert!(matches!(sent[2], HostMsg::Key { .. }));
     }
 
     #[test]

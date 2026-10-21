@@ -57,10 +57,15 @@ stop_deskd() {
     trap - EXIT
 }
 
+# Swipe order: dash, stats, notes, page 0, page 1, …
 walk_to() {
-    for _ in $(seq 1 10); do swipe right; done
-    [ "$1" = dash ] && return
-    swipe left
-    [ "$1" = stats ] && return
-    swipe left
+    for _ in $(seq 1 12); do swipe right; done
+    local steps
+    case "$1" in
+        dash) steps=0 ;;
+        stats) steps=1 ;;
+        notes) steps=2 ;;
+        page) steps=3 ;;
+    esac
+    for _ in $(seq 1 $steps); do swipe left; done
 }

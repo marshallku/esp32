@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use desk_core::{
     protocol::{self, HostMsg, KEYS_PER_PAGE, Key, MAX_LINE, MAX_PAGES},
-    text::{LABEL_MAX, SUB_MAX},
+    text,
 };
 use serde::Deserialize;
 
@@ -104,10 +104,9 @@ pub fn parse(text: &str) -> Result<Config> {
             for color in [&key.color, &key.text] {
                 parse_color(color).with_context(|| format!("key '{}'", key.label))?;
             }
-            for label in [Some(&key.label), key.label_on.as_ref(), Some(&key.sub), key.sub_on.as_ref()].into_iter().flatten() {
-                if !label.chars().all(|c| (' '..='~').contains(&c)) {
-                    bail!("key label '{}' has characters the panel's ASCII font cannot draw", label);
-                }
+            let texts = [Some(&key.label), key.label_on.as_ref(), Some(&key.sub), key.sub_on.as_ref()];
+            if let Some(text) = texts.into_iter().flatten().find(|t| t.chars().any(char::is_control)) {
+                bail!("key text {:?} contains control characters", text);
             }
             if let Some(state) = &key.state
                 && !states::is_known(state)
@@ -123,13 +122,13 @@ pub fn parse(text: &str) -> Result<Config> {
             }
             key.action.validate(config.pages.len()).with_context(|| format!("key '{}'", key.label))?;
             for label in [Some(&key.label), key.label_on.as_ref()].into_iter().flatten() {
-                if label.len() > LABEL_MAX {
-                    bail!("label '{}' is longer than the {} characters a key shows", label, LABEL_MAX);
+                if !text::label_fits(label) {
+                    bail!("label '{}' does not fit the two lines a key shows", label);
                 }
             }
             for sub in [Some(&key.sub), key.sub_on.as_ref()].into_iter().flatten() {
-                if sub.len() > SUB_MAX {
-                    bail!("sub '{}' is longer than the {} characters a key shows", sub, SUB_MAX);
+                if !text::sub_fits(sub) {
+                    bail!("sub '{}' does not fit the one line a key shows", sub);
                 }
             }
         }
@@ -188,6 +187,8 @@ pub fn parse_color(s: &str) -> Result<u32> {
 
 #[cfg(test)]
 mod tests {
+    use desk_core::text::{LABEL_MAX, SUB_MAX};
+
     use super::*;
 
     const SAMPLE: &str = r##"
@@ -252,7 +253,9 @@ action = { type = "page", index = 0 }
         let bad_page = SAMPLE.replace("index = 0", "index = 5");
         assert!(parse(&bad_page).is_err(), "page action out of range");
         let korean = SAMPLE.replace("\"Term\"", "\"터미널\"");
-        assert!(parse(&korean).is_err(), "non-ASCII label");
+        assert!(parse(&korean).is_ok(), "Korean labels are drawn with the Unifont");
+        let long_korean = SAMPLE.replace("\"Term\"", &format!("\"{}\"", "가".repeat(17)));
+        assert!(parse(&long_korean).is_err(), "more Hangul than two lines hold");
         let long = SAMPLE.replace("\"Term\"", &format!("\"{}\"", "x".repeat(LABEL_MAX + 1)));
         assert!(parse(&long).is_err(), "label longer than a key shows");
         let state = SAMPLE.replace("\"mic-muted\"", "\"cpu-hot\"");

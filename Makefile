@@ -27,7 +27,7 @@ help:
 	@echo "  make clean            cargo clean (workspace 전체)"
 	@echo "  make host-test        desk-core + deskd 테스트 (PC 툴체인)"
 	@echo "  make host-build       deskd release 빌드 → host/target/x86_64-unknown-linux-gnu/release/deskd"
-	@echo "  make e2e              desk-panel 실기기 e2e (보드 연결 + desk-panel 플래시 필요, deskd 서비스는 멈춘 상태로)"
+	@echo "  make e2e              desk-panel 실기기 e2e: deck, 알림, Claude 승인 (보드 연결 + 플래시 필요, deskd 서비스는 멈춘 상태로)"
 	@echo ""
 	@echo "현재 기본 패키지: $(PKG)"
 	@echo "현재 기본 바이너리: $(BIN)"
@@ -84,4 +84,5 @@ host-build:
 e2e:
 	cd host && cargo build -p deskd
 	host/e2e/deck.sh
+	host/e2e/notes.sh
 	host/e2e/claude.sh

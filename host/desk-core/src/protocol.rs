@@ -53,6 +53,8 @@ pub struct Key {
 pub enum Dir {
     Left,
     Right,
+    Up,
+    Down,
 }
 
 /// The panel's screens, in swipe order: dashboard, PC stats, notifications,
@@ -97,6 +99,29 @@ pub struct Gpu {
 
 pub const MAX_CORES: usize = 16;
 
+/// Notifications the panel keeps; older ones fall off the end.
+pub const MAX_NOTES: usize = 20;
+/// freedesktop urgency: 0 low, 1 normal, 2 critical.
+pub const URGENCY_CRITICAL: u8 = 2;
+
+/// A desktop notification as the panel shows it. Text is plain (deskd strips
+/// markup) and may be any script; the panel draws it with a Korean-capable
+/// font.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Note {
+    /// deskd's id, stable across panel reconnects.
+    pub id: u64,
+    pub app: String,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
+    pub urgency: u8,
+    /// Local "HH:MM" it arrived.
+    pub time: String,
+    #[serde(default)]
+    pub unread: bool,
+}
+
 /// A finished touch, as the gesture recogniser reports it and as the host can
 /// inject it for testing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +150,11 @@ pub enum HostMsg {
     Dismiss { id: u64 },
     /// The PC's vitals, about once a second.
     Stats(Stats),
+    /// Empties the panel's notification list; a resync follows as `note`s.
+    NotesReset,
+    /// A notification. `live` ones just arrived and get the banner and the
+    /// blinking border; the rest are a resync of history.
+    Note { note: Note, live: bool },
     /// Test hook: behave as if this gesture had just been made on the glass.
     Inject { gesture: Gesture },
 }
@@ -139,6 +169,12 @@ pub enum DeviceMsg {
     Answer { id: u64, button: u8 },
     /// The screen now showing.
     Screen { screen: ScreenId },
+    /// The notifications screen was opened: everything on it has been seen.
+    NotesSeen,
+    /// The user removed one notification from the panel.
+    NoteDismiss { id: u64 },
+    /// The user cleared the panel's notification list.
+    NotesClear,
     Err { msg: String },
 }
 
@@ -224,6 +260,26 @@ mod tests {
         let line = encode_host(&stats);
         assert!(line.len() < 512, "a stats line is small: {}", line.len());
         assert_eq!(decode_host(&line).unwrap(), stats);
+    }
+
+    #[test]
+    fn a_long_korean_note_fits_one_line() {
+        // deskd caps text by characters; Hangul is three bytes in UTF-8.
+        let note = HostMsg::Note {
+            note: Note {
+                id: u64::MAX,
+                app: "가".repeat(32),
+                summary: "나".repeat(100),
+                body: "다".repeat(300),
+                urgency: URGENCY_CRITICAL,
+                time: "23:59".into(),
+                unread: true,
+            },
+            live: true,
+        };
+        let line = encode_host(&note);
+        assert!(line.len() <= MAX_LINE, "{} bytes", line.len());
+        assert_eq!(decode_host(&line).unwrap(), note);
     }
 
     #[test]

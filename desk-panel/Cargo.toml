@@ -27,6 +27,7 @@ esp-alloc = "0.10.0"
 
 embedded-graphics = "0.8.1"
 embedded-hal      = "1.0.0"
+u8g2-fonts        = "0.8.0"
 
 desk-core      = { path = "../host/desk-core" }
 heapless       = "0.8.0"

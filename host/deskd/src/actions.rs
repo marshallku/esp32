@@ -35,6 +35,8 @@ pub enum Action {
     Dashboard,
     /// Switch the panel to the PC stats screen.
     Stats,
+    /// Switch the panel to the notifications.
+    Notes,
     /// OBS: switch the program scene.
     ObsScene { scene: String },
     /// OBS: start or stop recording.
@@ -97,6 +99,7 @@ impl Action {
             Action::Page { index } => Effect::Goto(ScreenId::Page(*index)),
             Action::Dashboard => Effect::Goto(ScreenId::Dash),
             Action::Stats => Effect::Goto(ScreenId::Stats),
+            Action::Notes => Effect::Goto(ScreenId::Notes),
             Action::ObsScene { scene } => Effect::Obs(obs::Command::Scene(scene.clone())),
             Action::ObsRecord => Effect::Obs(obs::Command::ToggleRecord),
             Action::ObsStream => Effect::Obs(obs::Command::ToggleStream),

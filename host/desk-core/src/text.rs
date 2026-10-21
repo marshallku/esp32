@@ -23,6 +23,52 @@ pub const LABEL_MAX: usize = 2 * LABEL_COLS;
 pub const SUB_MAX: usize = (KEY_W as usize - 8) / 6;
 pub const BODY_ROWS: usize = ((BODY_BOTTOM - BODY_TOP) / GLYPH_H) as usize;
 
+/// Line height of the Korean-capable font (GNU Unifont via u8g2).
+pub const UNIFONT_H: u16 = 16;
+
+/// Width of `c` in GNU Unifont: 8 px for half-width scripts (Latin, Greek,
+/// Cyrillic…), 16 px from Hangul Jamo up — Hangul, CJK and most symbols.
+pub fn unifont_width(c: char) -> u16 {
+    if (c as u32) < 0x1100 { 8 } else { 16 }
+}
+
+/// Wraps `text` to lines at most `max_px` wide, measuring each character with
+/// `width`; also breaks at newlines. By character, not word, like `wrap`.
+pub fn wrap_px(text: &str, max_px: u16, width: fn(char) -> u16) -> Vec<&str> {
+    let mut lines = Vec::new();
+    for raw in text.split('\n') {
+        let (mut start, mut used) = (0, 0);
+        for (i, c) in raw.char_indices() {
+            let w = width(c);
+            if used + w > max_px && i > start {
+                lines.push(&raw[start..i]);
+                (start, used) = (i, 0);
+            }
+            used += w;
+        }
+        lines.push(&raw[start..]);
+    }
+    lines
+}
+
+/// Whether a key label shows in full: two lines of the 10×20 font if it is
+/// plain ASCII, otherwise two lines of Unifont.
+pub fn label_fits(label: &str) -> bool {
+    if label.is_ascii() {
+        return label.len() <= LABEL_MAX;
+    }
+    wrap_px(label, KEY_W - 8, unifont_width).len() <= 2
+}
+
+/// Whether a key's subtitle shows in full: one line of the 6×10 font if it
+/// is plain ASCII, otherwise one line of Unifont.
+pub fn sub_fits(sub: &str) -> bool {
+    if sub.is_ascii() {
+        return sub.len() <= SUB_MAX;
+    }
+    wrap_px(sub, KEY_W - 8, unifont_width).len() <= 1
+}
+
 /// Hard-wraps `text` at `cols`, also breaking at newlines. Breaks are by
 /// character count, not word, because commands and paths are what gets shown
 /// and those must appear byte for byte rather than reflowed.
@@ -59,6 +105,25 @@ mod tests {
         assert_eq!(wrap("ab\ncd", 4), ["ab", "cd"]);
         assert_eq!(wrap("ab\n\ncd", 4), ["ab", "", "cd"]);
         assert_eq!(wrap("abcd", 4), ["abcd"]);
+    }
+
+    #[test]
+    fn pixel_wrap_counts_hangul_double() {
+        // 140 px: 17 half-width or 8 wide characters per line.
+        assert_eq!(wrap_px("가나다라마바사아자", 140, unifont_width), ["가나다라마바사아", "자"]);
+        assert_eq!(wrap_px("abc가", 40, unifont_width), ["abc가"], "exactly full");
+        assert_eq!(wrap_px("abc가", 39, unifont_width), ["abc", "가"]);
+        assert_eq!(wrap_px("a\nb", 40, unifont_width), ["a", "b"]);
+        assert_eq!(wrap_px("", 40, unifont_width), [""]);
+    }
+
+    #[test]
+    fn labels_fit_by_their_font() {
+        assert!(label_fits(&"x".repeat(LABEL_MAX)));
+        assert!(!label_fits(&"x".repeat(LABEL_MAX + 1)));
+        assert!(label_fits("터미널"));
+        assert!(label_fits(&"가".repeat(16)), "two lines of eight");
+        assert!(!label_fits(&"가".repeat(17)));
     }
 
     #[test]

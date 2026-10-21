@@ -170,12 +170,23 @@ on each key belong to the host. `desk-panel` keeps that split:
 
 - **The panel** draws what it is sent and reports taps, long presses and
   swipes. It knows no actions. Swiping walks the screens in a fixed order —
-  homelab dashboard, PC stats, then the button pages — and a minute untouched
-  on a button page returns to the dashboard.
+  homelab dashboard, PC stats, notifications, then the button pages — and a
+  minute untouched on a button page returns to the dashboard.
 - **PC stats** (CPU total and per core, temperature, memory, GPU via
   `nvidia-smi`, network) arrive from deskd once a second; the screen keeps a
   two-minute graph, breaks it where samples are missing, and marks itself
   stale when they stop.
+- **Notifications** are overheard on the session bus: deskd becomes a D-Bus
+  monitor and watches `Notify` calls go to the notification daemon (dunst
+  here), so nothing about it is reconfigured. The real id is in the daemon's
+  *reply*, so each call is held until its reply is seen. A new notification
+  slides a banner over whatever screen is up for four seconds and blinks the
+  border three times — until the list is opened, for a critical one. Tapping
+  the banner opens the list; swipe up and down to scroll it, hold a row to
+  remove it. deskd keeps the last 20 and resyncs the panel after a reconnect.
+- **Text beyond ASCII** — notifications, Korean key labels — is drawn with
+  GNU Unifont (`unifont_t_korean2` from u8g2); the panel's chrome keeps its
+  ASCII fonts. Approval prompts stay ASCII-only on purpose (see below).
 - **`deskd`** (`host/deskd`) owns the profile in `~/.config/deskd/config.toml`
   (start from `host/deskd/config.example.toml`), pushes pages of keys, runs
   the action behind a press, and updates keys when their state changes.
@@ -225,7 +236,7 @@ and deskd, and it lives in `host/` so its tests run on the PC:
 ```sh
 make host-test      # desk-core + deskd unit tests
 make host-build     # host/target/x86_64-unknown-linux-gnu/release/deskd
-make e2e            # on the real panel: deck + Claude approval suites
+make e2e            # on the real panel: deck, notifications, Claude approval
 host/e2e/obs.sh     # on the real panel, against the running OBS
 ```
 

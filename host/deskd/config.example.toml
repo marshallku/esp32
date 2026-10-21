@@ -1,8 +1,9 @@
 # deskd profile — copy to ~/.config/deskd/config.toml, then `deskd check`.
 #
-# Up to 8 pages of up to 9 keys (3x3, row-major from the top left). Swiping
-# left from the dashboard opens page 0. Labels are ASCII only: the panel's
-# font has no other glyphs. Colours are "#rrggbb".
+# Up to 8 pages of up to 9 keys (3x3, row-major from the top left). Screens
+# swipe in the order dashboard, stats, notifications, page 0, page 1, ...
+# Labels may be Korean (drawn with Unifont; two lines of eight syllables at
+# most). Colours are "#rrggbb".
 #
 # Actions:
 #   { type = "shell", cmd = "..." }                 sh -c, detached
@@ -14,6 +15,7 @@
 #   { type = "page", index = 1 }                    switch to another page
 #   { type = "dashboard" }                          switch to the dashboard
 #   { type = "stats" }                              switch to the PC stats screen
+#   { type = "notes" }                              switch to the notifications
 #   { type = "obs-scene", scene = "Desk" }          OBS: switch program scene
 #   { type = "obs-record" }                         OBS: start/stop recording
 #   { type = "obs-stream" }                         OBS: start/stop streaming

@@ -56,6 +56,21 @@ pub fn button_at(x: u16, y: u16, count: usize) -> Option<u8> {
     (0..count).find(|&i| button_rect(i, count).contains(x, y)).map(|i| i as u8)
 }
 
+/// A notification banner slides over the top of whatever screen is up.
+pub const BANNER: Rect = Rect { x: 6, y: 6, w: W - 12, h: 92 };
+
+/// The notifications screen: rows of `NOTE_ROW_H` under the status strip,
+/// and a Clear button bottom right.
+pub const NOTES_TOP: u16 = STRIP_H + 4;
+pub const NOTE_ROW_H: u16 = 76;
+pub const CLEAR_BUTTON: Rect = Rect { x: W - 126, y: H - 50, w: 120, h: 44 };
+pub const NOTE_ROWS: usize = ((CLEAR_BUTTON.y - NOTES_TOP) / NOTE_ROW_H) as usize;
+
+/// The visible notification row under `y`, counted from the top.
+pub fn note_row_at(y: u16) -> Option<usize> {
+    (y >= NOTES_TOP && y < NOTES_TOP + NOTE_ROW_H * NOTE_ROWS as u16).then(|| ((y - NOTES_TOP) / NOTE_ROW_H) as usize)
+}
+
 /// The prompt body's text box, between the title and the buttons.
 pub const BODY_TOP: u16 = 64;
 pub const BODY_BOTTOM: u16 = BUTTON_Y - GAP;

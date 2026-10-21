@@ -64,6 +64,9 @@ impl Recognizer {
                 let (dx, dy) = (t.last.0 - t.start.0, t.last.1 - t.start.1);
                 let gesture = if dx.abs() >= SWIPE && dx.abs() > 2 * dy.abs() {
                     Gesture::Swipe { dir: if dx < 0 { Dir::Left } else { Dir::Right } }
+                } else if dy.abs() >= SWIPE && dy.abs() > 2 * dx.abs() {
+                    // Up means the finger moved up: content scrolls forward.
+                    Gesture::Swipe { dir: if dy < 0 { Dir::Up } else { Dir::Down } }
                 } else if !t.moved {
                     Gesture::Tap { x: t.start.0 as u16, y: t.start.1 as u16 }
                 } else {
@@ -105,6 +108,14 @@ mod tests {
         assert_eq!(ev[0].gesture, Gesture::Swipe { dir: Dir::Left });
         let ev = run(&[(0, Some((100, 240))), (120, Some((200, 240))), (130, None)]);
         assert_eq!(ev[0].gesture, Gesture::Swipe { dir: Dir::Right });
+    }
+
+    #[test]
+    fn vertical_drag_is_an_up_or_down_swipe() {
+        let ev = run(&[(0, Some((240, 400))), (120, Some((245, 250))), (130, None)]);
+        assert_eq!(ev[0].gesture, Gesture::Swipe { dir: Dir::Up });
+        let ev = run(&[(0, Some((240, 100))), (120, Some((240, 220))), (130, None)]);
+        assert_eq!(ev[0].gesture, Gesture::Swipe { dir: Dir::Down });
     }
 
     #[test]

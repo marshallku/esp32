@@ -23,7 +23,7 @@ use embedded_graphics::{
 
 use crate::{
     dashboard::{self, Dash},
-    pcstats,
+    notes_screen, pcstats, unifont,
 };
 
 const BG: Rgb565 = Rgb565::BLACK;
@@ -31,6 +31,8 @@ const DIM: Rgb565 = Rgb565::new(12, 24, 12);
 const ACCENT: Rgb565 = Rgb565::new(31, 45, 0);
 const WARN: Rgb565 = Rgb565::new(31, 20, 0);
 const ALARM: Rgb565 = Rgb565::new(24, 4, 4);
+/// dunst's mauve, as on the notifications screen.
+const UNREAD: Rgb565 = Rgb565::new(25, 40, 30);
 
 pub fn draw<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, dash: &Dash) {
     let _ = target.clear(BG);
@@ -50,7 +52,10 @@ pub fn draw<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, dash: &Das
                 if link_up { ("waiting for a layout from deskd", DIM) } else { ("PC not connected", WARN) };
             center(target, line, 250, color);
         }
+        View::Notes { notes, scroll } => notes_screen::draw(target, app, notes, scroll),
     }
+    // Last, over everything; `overlay` is empty while a prompt is up.
+    notes_screen::draw_overlay(target, &app.overlay());
 }
 
 /// Title on the left, page dots in the middle, link state and clock on the
@@ -73,6 +78,16 @@ pub fn strip<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, title: &s
         let _ = Circle::new(Point::new(x0 + i as i32 * 16, STRIP_H as i32 / 2 - 4), 9).into_styled(style).draw(target);
     }
 
+    let unread = app.unread();
+    if unread > 0 {
+        let _ = Circle::new(Point::new(W as i32 - 118, 10), 22).into_styled(PrimitiveStyle::with_fill(UNREAD)).draw(target);
+        let mut count: heapless::String<4> = heapless::String::new();
+        let _ = core::fmt::Write::write_fmt(&mut count, format_args!("{}", unread.min(99)));
+        let x = W as i32 - 107 - count.len() as i32 * 3;
+        let _ = Text::with_baseline(&count, Point::new(x, 16), MonoTextStyle::new(&FONT_6X10, Rgb565::BLACK), Baseline::Top)
+            .draw(target);
+    }
+
     let link = if app.link_up() { ACCENT } else { WARN };
     let _ = Circle::new(Point::new(W as i32 - 82, 16), 10).into_styled(PrimitiveStyle::with_fill(link)).draw(target);
     let _ = Text::with_baseline(app.time(), Point::new(W as i32 - 62, 11), style, Baseline::Top).draw(target);
@@ -89,20 +104,43 @@ fn draw_key<D: DrawTarget<Color = Rgb565>>(target: &mut D, r: Rect, key: &Key) {
         let _ = bar.into_styled(PrimitiveStyle::with_fill(ACCENT)).draw(target);
     }
 
+    // Each field picks its own font — the 10×20 / 6×10 mono fonts for ASCII,
+    // Unifont otherwise — exactly as `text::label_fits` and `sub_fits`
+    // validated it on the host.
     let cx = r.x as i32 + r.w as i32 / 2;
-    let lines = text::wrap(&key.label, LABEL_COLS);
+    let max_w = r.w - 8;
+    let (lines, line_h) = if key.label.is_ascii() {
+        (text::wrap(&key.label, LABEL_COLS), GLYPH_H as i32)
+    } else {
+        (text::wrap_px(&key.label, max_w, text::unifont_width), unifont::LINE_H + 2)
+    };
     let lines = &lines[..lines.len().min(2)];
-    let block = lines.len() as i32 * GLYPH_H as i32 + if key.sub.is_empty() { 0 } else { 14 };
-    let mut y = r.y as i32 + (r.h as i32 - block) / 2;
+    let sub_h = match (key.sub.is_empty(), key.sub.is_ascii()) {
+        (true, _) => 0,
+        (false, true) => 14,
+        (false, false) => unifont::LINE_H + 4,
+    };
+    let mut y = r.y as i32 + (r.h as i32 - lines.len() as i32 * line_h - sub_h) / 2;
     let centered = TextStyleBuilder::new().alignment(Alignment::Center).baseline(Baseline::Top).build();
     for line in lines {
-        let _ = Text::with_text_style(line, Point::new(cx, y), MonoTextStyle::new(&FONT_10X20, fg), centered).draw(target);
-        y += GLYPH_H as i32;
+        if key.label.is_ascii() {
+            let _ = Text::with_text_style(line, Point::new(cx, y), MonoTextStyle::new(&FONT_10X20, fg), centered)
+                .draw(target);
+        } else {
+            unifont::draw_centered(target, line, cx, y, fg);
+        }
+        y += line_h;
     }
-    if !key.sub.is_empty() {
+    if key.sub.is_empty() {
+        return;
+    }
+    if key.sub.is_ascii() {
         let sub = text::wrap(&key.sub, SUB_MAX);
         let _ = Text::with_text_style(sub[0], Point::new(cx, y + 4), MonoTextStyle::new(&FONT_6X10, fg), centered)
             .draw(target);
+    } else {
+        let sub = text::wrap_px(&key.sub, max_w, text::unifont_width);
+        unifont::draw_centered(target, sub[0], cx, y + 4, fg);
     }
 }
 

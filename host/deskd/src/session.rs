@@ -24,6 +24,8 @@ use crate::{
     config,
     control::Request,
     deck::{self, Deck},
+    notes::Notes,
+    notify::Incoming,
     obs,
     outbox::Outbox,
     serial,
@@ -41,6 +43,7 @@ pub enum Event {
     Control(Request, oneshot::Sender<Value>),
     Approve(Ask, oneshot::Sender<Decision>),
     Stats(Stats),
+    Note(Incoming),
 }
 
 /// Waits for the panel, runs a session, and starts over when it ends. Never
@@ -51,22 +54,24 @@ pub async fn run(
     mut events: mpsc::Receiver<Event>,
     obs: Option<obs::Handle>,
 ) -> ! {
+    // Outlives every session: a reconnecting panel is resynced from it.
+    let mut notes = Notes::default();
     loop {
         let Some(path) = serial::find() else {
-            idle(&mut deck, &mut events, "panel not plugged in").await;
+            idle(&mut deck, &mut notes, &mut events, "panel not plugged in").await;
             continue;
         };
         let (port, lines) = match serial::open(&path) {
             Ok(opened) => opened,
             Err(e) => {
                 eprintln!("{e:#}");
-                idle(&mut deck, &mut events, "panel port could not be opened").await;
+                idle(&mut deck, &mut notes, &mut events, "panel port could not be opened").await;
                 continue;
             }
         };
         eprintln!("panel port {} open", path.display());
         let mut session = Session::new(port, obs.clone());
-        let reason = session.run(&mut deck, &config_path, &mut events, lines).await;
+        let reason = session.run(&mut deck, &mut notes, &config_path, &mut events, lines).await;
         eprintln!("session ended: {reason:#}");
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -76,7 +81,7 @@ pub async fn run(
 /// its initial queries whether or not the panel is plugged in, and they go
 /// out with the next push — and control requests get a reply instead of
 /// hanging.
-async fn idle(deck: &mut Deck, events: &mut mpsc::Receiver<Event>, why: &str) {
+async fn idle(deck: &mut Deck, notes: &mut Notes, events: &mut mpsc::Receiver<Event>, why: &str) {
     let deadline = tokio::time::sleep(Duration::from_secs(1));
     tokio::pin!(deadline);
     loop {
@@ -95,6 +100,10 @@ async fn idle(deck: &mut Deck, events: &mut mpsc::Receiver<Event>, why: &str) {
                 }
                 // Nobody to show them to; the next sample comes in a second.
                 Event::Stats(_) => {}
+                // Kept: the panel gets it with the resync when it is back.
+                Event::Note(incoming) => {
+                    notes.add(incoming, local_hm());
+                }
             },
         }
     }
@@ -146,6 +155,7 @@ impl Session {
     async fn run(
         &mut self,
         deck: &mut Deck,
+        notes: &mut Notes,
         config_path: &Path,
         events: &mut mpsc::Receiver<Event>,
         mut lines: mpsc::Receiver<String>,
@@ -154,11 +164,11 @@ impl Session {
         loop {
             let step = tokio::select! {
                 line = lines.recv() => match line {
-                    Some(line) => self.on_line(&line, deck),
+                    Some(line) => self.on_line(&line, deck, notes),
                     None => Err(anyhow::anyhow!("port closed")),
                 },
                 Some(ev) = events.recv() => {
-                    self.on_event(ev, deck, config_path);
+                    self.on_event(ev, deck, notes, config_path);
                     Ok(())
                 },
                 _ = tick.tick() => self.on_tick(),
@@ -169,7 +179,7 @@ impl Session {
         }
     }
 
-    fn on_line(&mut self, line: &str, deck: &mut Deck) -> Result<()> {
+    fn on_line(&mut self, line: &str, deck: &mut Deck, notes: &mut Notes) -> Result<()> {
         let msg = match protocol::decode_device(line) {
             None => {
                 // The panel's own log, interleaved on the same wire.
@@ -207,6 +217,7 @@ impl Session {
                 self.clock.clear();
                 self.queue_clock();
                 self.outbox.push_layout();
+                self.outbox.notes_resync(notes.resync());
                 // A rebooted panel lost the modal it was showing; the hook
                 // behind it is still waiting, so put it back up (re-armed).
                 if let Some(prompt) = self.approvals.current_prompt() {
@@ -236,12 +247,24 @@ impl Session {
                 }
             }
             DeviceMsg::Screen { screen } => self.screen = Some(screen),
+            DeviceMsg::NotesSeen => {
+                eprintln!("notifications seen on the panel");
+                notes.seen();
+            }
+            DeviceMsg::NoteDismiss { id } => {
+                eprintln!("notification {id} removed on the panel");
+                notes.dismiss(id);
+            }
+            DeviceMsg::NotesClear => {
+                eprintln!("notifications cleared on the panel");
+                notes.clear();
+            }
             DeviceMsg::Err { msg } => eprintln!("panel rejected a message: {msg}"),
         }
         Ok(())
     }
 
-    fn on_event(&mut self, ev: Event, deck: &mut Deck, config_path: &Path) {
+    fn on_event(&mut self, ev: Event, deck: &mut Deck, notes: &mut Notes, config_path: &Path) {
         match ev {
             Event::State(name, value) => {
                 let updates = deck.set_state(&name, value);
@@ -256,6 +279,18 @@ impl Session {
                     self.outbox.stats(HostMsg::Stats(stats));
                 }
             }
+            Event::Note(incoming) => {
+                let note = notes.add(incoming, local_hm());
+                // The panel treats one arriving on its open list as read; so
+                // must the copy here, or the two disagree on the unread count.
+                if self.screen == Some(ScreenId::Notes) {
+                    notes.seen_one(note.id);
+                }
+                eprintln!("notification {} from {}: {}", note.id, note.app, note.summary);
+                if self.fw.is_some() {
+                    self.outbox.note(HostMsg::Note { note, live: true });
+                }
+            }
             Event::Control(req, reply) => {
                 let answer = match req {
                     Request::Status => json!({
@@ -264,6 +299,8 @@ impl Session {
                         "ready": self.fw.is_some(),
                         "fw": self.fw,
                         "screen": self.screen,
+                        "notes": notes.len(),
+                        "unread": notes.unread(),
                     }),
                     Request::States => json!({ "ok": true, "states": deck.states() }),
                     // control::handle turns these into Event::Approve; one
