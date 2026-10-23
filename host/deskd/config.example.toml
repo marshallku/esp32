@@ -27,6 +27,7 @@
 #   "obs-connected", "obs-recording", "obs-streaming"
 #   "obs-scene:<scene>"                             true while it is the program scene
 #   "obs-muted:<input>"
+#   any name defined in a [state.<name>] table (see the end of this file)
 #
 # OBS is only contacted when some key uses it. The obs-websocket password is
 # read from $OBS_WEBSOCKET_PASSWORD, or else from OBS's own config, so it
@@ -166,6 +167,14 @@ sub = "dashboard"
 color = "#5e4a2a"
 action = { type = "dashboard" }
 
+[[page.key]]
+label = "Sunshine"
+sub = "off"
+sub_on = "running"
+color = "#2a3f5f"
+state = "sunshine"
+action = { type = "shell", cmd = "systemctl --user is-active --quiet sunshine && systemctl --user stop sunshine || systemctl --user start sunshine" }
+
 # Per-app profiles: while a window of one of `class` has focus (Hyprland's
 # `class`, see `hyprctl activewindow`), these pages replace the ones above.
 # The first [[app]] that lists the class wins; `page` actions count within
@@ -208,3 +217,69 @@ label = "Home"
 sub = "dashboard"
 color = "#5e4a2a"
 action = { type = "dashboard" }
+
+[[app]]
+name = "Discord"
+class = ["discord", "vesktop"]
+
+[[app.page]]
+name = "voice"
+
+[[app.page.key]]
+label = "Mute"
+color = "#2d5a3d"
+action = { type = "keys", mods = "CTRL SHIFT", key = "M" }
+
+[[app.page.key]]
+label = "Deafen"
+color = "#2d5a3d"
+action = { type = "keys", mods = "CTRL SHIFT", key = "D" }
+
+[[app.page.key]]
+label = "Find"
+sub = "quick switch"
+color = "#333333"
+action = { type = "keys", mods = "CTRL", key = "K" }
+
+[[app.page.key]]
+label = "Prev"
+sub = "channel"
+color = "#2a3f5f"
+action = { type = "keys", mods = "ALT", key = "Up" }
+
+[[app.page.key]]
+label = "Next"
+sub = "channel"
+color = "#2a3f5f"
+action = { type = "keys", mods = "ALT", key = "Down" }
+
+[[app.page.key]]
+label = "Unread"
+sub = "next"
+color = "#4a3a5e"
+action = { type = "keys", mods = "ALT SHIFT", key = "Down" }
+
+[[app.page.key]]
+label = "Mark read"
+color = "#4a3a5e"
+action = { type = "keys", key = "Escape" }
+
+[[app.page.key]]
+label = "Upload"
+color = "#333333"
+action = { type = "keys", mods = "CTRL SHIFT", key = "U" }
+
+[[app.page.key]]
+label = "Home"
+sub = "dashboard"
+color = "#5e4a2a"
+action = { type = "dashboard" }
+
+# A state read from a command: true while `cmd` (run with sh -c) exits 0,
+# polled every `every` seconds (default 5), and every second for a few
+# seconds after any key that runs something, so a key that toggles it
+# shows the result right away. A command that fails to start or runs
+# past 10 s leaves its keys as they were.
+[state.sunshine]
+cmd = "systemctl --user is-active --quiet sunshine"
+every = 10

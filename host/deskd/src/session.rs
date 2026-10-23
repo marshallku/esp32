@@ -29,6 +29,7 @@ use crate::{
     obs,
     outbox::Outbox,
     serial,
+    states,
 };
 
 const ACK_TIMEOUT: Duration = Duration::from_secs(1);
@@ -55,6 +56,7 @@ pub async fn run(
     config_path: PathBuf,
     mut events: mpsc::Receiver<Event>,
     obs: Option<obs::Handle>,
+    commands: states::Commands,
 ) -> ! {
     // Outlives every session: a reconnecting panel is resynced from it.
     let mut notes = Notes::default();
@@ -73,7 +75,7 @@ pub async fn run(
         };
         eprintln!("panel port {} open", path.display());
         let mut session = Session::new(port, obs.clone());
-        let reason = session.run(&mut deck, &mut notes, &config_path, &mut events, lines).await;
+        let reason = session.run(&mut deck, &mut notes, &commands, &config_path, &mut events, lines).await;
         eprintln!("session ended: {reason:#}");
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -170,6 +172,7 @@ impl Session {
         &mut self,
         deck: &mut Deck,
         notes: &mut Notes,
+        commands: &states::Commands,
         config_path: &Path,
         events: &mut mpsc::Receiver<Event>,
         mut lines: mpsc::Receiver<String>,
@@ -178,11 +181,11 @@ impl Session {
         loop {
             let step = tokio::select! {
                 line = lines.recv() => match line {
-                    Some(line) => self.on_line(&line, deck, notes),
+                    Some(line) => self.on_line(&line, deck, notes, commands),
                     None => Err(anyhow::anyhow!("port closed")),
                 },
                 Some(ev) = events.recv() => {
-                    self.on_event(ev, deck, notes, config_path);
+                    self.on_event(ev, deck, notes, commands, config_path);
                     Ok(())
                 },
                 _ = tick.tick() => self.on_tick(),
@@ -193,7 +196,7 @@ impl Session {
         }
     }
 
-    fn on_line(&mut self, line: &str, deck: &mut Deck, notes: &mut Notes) -> Result<()> {
+    fn on_line(&mut self, line: &str, deck: &mut Deck, notes: &mut Notes, commands: &states::Commands) -> Result<()> {
         let msg = match protocol::decode_device(line) {
             None => {
                 // The panel's own log, interleaved on the same wire.
@@ -258,7 +261,10 @@ impl Session {
                 Some(action) => {
                     eprintln!("press {page}/{index}{}: {action:?}", if long { " (long)" } else { "" });
                     match action.effect() {
-                        Effect::Run(argv) => actions::spawn(argv),
+                        Effect::Run(argv) => {
+                            actions::spawn(argv);
+                            commands.pressed();
+                        }
                         Effect::Goto(screen) => self.goto(screen),
                         Effect::Obs(cmd) => match &self.obs {
                             Some(obs) => obs.send(cmd),
@@ -292,7 +298,14 @@ impl Session {
         Ok(())
     }
 
-    fn on_event(&mut self, ev: Event, deck: &mut Deck, notes: &mut Notes, config_path: &Path) {
+    fn on_event(
+        &mut self,
+        ev: Event,
+        deck: &mut Deck,
+        notes: &mut Notes,
+        commands: &states::Commands,
+        config_path: &Path,
+    ) {
         match ev {
             Event::State(name, value) => {
                 let updates = deck.set_state(&name, value);
@@ -360,6 +373,7 @@ impl Session {
                     Request::Focus { .. } => json!({ "ok": false, "error": "focus must arrive as Event::Focus" }),
                     Request::Reload => match config::load(config_path) {
                         Ok(config) => {
+                            commands.replace(config.states.clone());
                             deck.replace(config);
                             if self.fw.is_some() {
                                 self.outbox.push_layout();

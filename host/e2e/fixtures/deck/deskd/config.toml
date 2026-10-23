@@ -4,7 +4,9 @@ name = "main"
 
 [[page.key]]
 label = "Touch A"
+label_on = "Touched"
 color = "#204060"
+state = "touched"
 action = { type = "shell", cmd = "date +%s.%N > \"$E2E_OUT/pressed-a\"" }
 
 [[page.key]]
@@ -29,3 +31,8 @@ action = { type = "shell", cmd = "date +%s.%N > \"$E2E_OUT/pressed-b\"" }
 [[page.key]]
 label = "Dashboard"
 action = { type = "dashboard" }
+
+# Polled hourly: only the burst after a press can turn it on in time.
+[state.touched]
+cmd = "test -e \"$E2E_OUT/pressed-a\""
+every = 3600

@@ -1,7 +1,7 @@
 #!/bin/bash
-# Deck e2e: handshake, screen order, key actions, page navigation, a burst of
-# layout pushes during redraws, and a deskd restart that must not reboot the
-# panel.
+# Deck e2e: handshake, screen order, key actions, command states, page
+# navigation, a burst of layout pushes during redraws, and a deskd restart
+# that must not reboot the panel.
 source "$(dirname "$0")/lib.sh"
 export XDG_CONFIG_HOME=$HERE/fixtures/deck
 
@@ -16,8 +16,10 @@ swipe left
 check "next swipe opens the notifications" '[ "$(screen)" = notes ]'
 swipe left
 check "next swipe opens page 0" '[ "$(screen)" = p0 ]'
+check "a command state reports at startup" '[ "$(state touched)" = False ]'
 tap $KEY0
 check "tap on key 0 runs its shell action" '[ -s $OUT/pressed-a ]'
+check "the press re-polls command states" '[ "$(state touched)" = True ]'
 tap $KEY2
 check "page action moves the panel to page 1" '[ "$(screen)" = p1 ]'
 tap $KEY0

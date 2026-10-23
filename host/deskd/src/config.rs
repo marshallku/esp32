@@ -3,7 +3,10 @@
 //! This is the Stream Deck "profile". The panel never sees it — deskd turns it
 //! into the `Key`s the panel draws and keeps the actions to itself.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use desk_core::{
@@ -27,7 +30,29 @@ pub struct Config {
     /// `class` has focus, its pages replace the default ones.
     #[serde(rename = "app", default)]
     pub apps: Vec<AppProfile>,
+    /// States read from a command, `[state.<name>]`, for keys of any
+    /// profile to show by name.
+    #[serde(rename = "state", default)]
+    pub states: BTreeMap<String, CommandState>,
 }
+
+/// A live state deskd polls by running a command: true while it exits 0.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CommandState {
+    /// Run with `sh -c`.
+    pub cmd: String,
+    /// Seconds between polls.
+    #[serde(default = "default_every")]
+    pub every: u64,
+}
+
+fn default_every() -> u64 {
+    5
+}
+
+/// Slowest poll a command state may ask for.
+const EVERY_MAX: u64 = 3600;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -112,7 +137,22 @@ pub fn load(path: &Path) -> Result<Config> {
 /// caught here, at startup, rather than showing up as an `err` line later.
 pub fn parse(text: &str) -> Result<Config> {
     let config: Config = toml::from_str(text)?;
-    validate_pages(&config.pages).context("default profile")?;
+    for (name, state) in &config.states {
+        let ok = !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !ok {
+            bail!("state name '{name}' may only contain a-z, 0-9 and '-'");
+        }
+        if states::is_known(name) || name.starts_with("obs-") {
+            bail!("state name '{name}' is taken by a built-in state");
+        }
+        if state.cmd.trim().is_empty() {
+            bail!("state '{name}' needs a cmd");
+        }
+        if !(1..=EVERY_MAX).contains(&state.every) {
+            bail!("state '{name}': every must be 1..={EVERY_MAX} seconds");
+        }
+    }
+    validate_pages(&config.pages, &config.states).context("default profile")?;
     for app in &config.apps {
         let name = &app.name;
         if name.is_empty() || !name.is_ascii() || name.len() > PROFILE_NAME_MAX {
@@ -121,14 +161,14 @@ pub fn parse(text: &str) -> Result<Config> {
         if app.class.is_empty() || app.class.iter().any(String::is_empty) {
             bail!("app profile '{name}' needs non-empty window classes");
         }
-        validate_pages(&app.pages).with_context(|| format!("app profile '{name}'"))?;
+        validate_pages(&app.pages, &config.states).with_context(|| format!("app profile '{name}'"))?;
     }
     Ok(config)
 }
 
 /// One profile's pages. A `page` action's index refers to this profile's own
 /// pages, so it is checked against them.
-fn validate_pages(pages: &[Page]) -> Result<()> {
+fn validate_pages(pages: &[Page], commands: &BTreeMap<String, CommandState>) -> Result<()> {
     if pages.is_empty() || pages.len() > MAX_PAGES {
         bail!("need 1..={} pages, got {}", MAX_PAGES, pages.len());
     }
@@ -146,9 +186,10 @@ fn validate_pages(pages: &[Page]) -> Result<()> {
             }
             if let Some(state) = &key.state
                 && !states::is_known(state)
+                && !commands.contains_key(state)
             {
                 bail!(
-                    "key '{}': unknown state '{}', expected one of {:?} or {}<scene> / {}<input>",
+                    "key '{}': unknown state '{}', expected one of {:?}, {}<scene> / {}<input> or a [state.<name>]",
                     key.label,
                     state,
                     states::NAMES,
@@ -341,6 +382,23 @@ action = { type = "obs-scene", scene = "Desk" }
         assert!(parse(&APPS.replace("class = [\"firefox\", \"librewolf\"]", "class = [\"\"]")).is_err());
         let bad_page = APPS.replace("action = { type = \"keys\", mods = \"ALT\", key = \"Left\" }", "action = { type = \"page\", index = 1 }");
         assert!(parse(&bad_page).is_err(), "page index beyond the app profile's own pages");
+    }
+
+    #[test]
+    fn command_states_are_named_by_the_config() {
+        let vpn = format!("{SAMPLE}\n[state.vpn]\ncmd = \"true\"\n").replace("\"mic-muted\"", "\"vpn\"");
+        let config = parse(&vpn).unwrap();
+        assert_eq!(config.states["vpn"], CommandState { cmd: "true".into(), every: 5 });
+        let builtin = format!("{SAMPLE}\n[state.muted]\ncmd = \"true\"\n");
+        assert!(parse(&builtin).is_err(), "shadows a built-in state");
+        let obs = format!("{SAMPLE}\n[state.obs-x]\ncmd = \"true\"\n");
+        assert!(parse(&obs).is_err(), "takes the OBS prefix");
+        let never = format!("{SAMPLE}\n[state.vpn]\ncmd = \"true\"\nevery = 0\n");
+        assert!(parse(&never).is_err(), "never polled");
+        let empty = format!("{SAMPLE}\n[state.vpn]\ncmd = \" \"\n");
+        assert!(parse(&empty).is_err(), "no command");
+        let upper = format!("{SAMPLE}\n[state.VPN]\ncmd = \"true\"\n");
+        assert!(parse(&upper).is_err(), "name outside a-z0-9-");
     }
 
     #[test]

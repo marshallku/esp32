@@ -201,7 +201,11 @@ on each key belong to the host. `desk-panel` keeps that split:
 Actions: shell commands, key combinations to the focused window (Hyprland's
 Lua dispatcher), playerctl, PipeWire volume and mute, page navigation, and
 OBS (scene, record, stream, input mute). Keys can show live state — mic muted,
-OBS recording, the current scene — drawn inverted while true.
+OBS recording, the current scene — drawn inverted while true. Anything else
+can be a state too: a `[state.<name>]` table names a command that deskd polls,
+true while it exits 0 (a VPN being up, a service running). After any key that
+runs something those commands are polled every second for a few seconds, so
+a key that toggles one shows the result right away.
 
 ### The wire protocol
 
@@ -317,6 +321,17 @@ deskd check
 install -Dm644 host/deskd/deskd.service ~/.config/systemd/user/deskd.service
 systemctl --user enable --now deskd
 deskd ctl '{"cmd":"status"}'
+```
+
+The unit is wanted by `graphical-session.target`, which only a systemd-managed
+session (uwsm and the like) activates. When Hyprland is started directly that
+target never comes up, so deskd has to be started from the compositor once
+its environment is imported — `restart`, so a deskd left from an earlier
+Hyprland instance picks up the new `HYPRLAND_INSTANCE_SIGNATURE`:
+
+```lua
+hl.exec_cmd("systemctl --user import-environment WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE"
+    .. "; systemctl --user restart deskd.service")
 ```
 
 `deskd ctl '{"cmd":"reload"}'` re-reads the config and pushes it. OBS is

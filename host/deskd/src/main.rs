@@ -95,13 +95,14 @@ async fn run() -> Result<()> {
         obs::spawn(config.obs.url.clone(), machine, events_tx.clone())
     });
 
+    let commands = states::Commands::spawn(config.states.clone(), events_tx.clone());
     let deck = deck::Deck::new(config);
     tokio::spawn(states::poll_audio(events_tx.clone()));
     tokio::spawn(vitals::run(events_tx.clone()));
     tokio::spawn(notify::run(events_tx.clone()));
     tokio::spawn(focus::run(events_tx.clone()));
     let control = tokio::spawn(control::serve(events_tx));
-    let session = tokio::spawn(session::run(deck, config_path, events_rx, obs));
+    let session = tokio::spawn(session::run(deck, config_path, events_rx, obs, commands));
 
     tokio::select! {
         result = control => result?.context("control socket"),
