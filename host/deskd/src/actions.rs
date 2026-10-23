@@ -15,11 +15,15 @@ use crate::obs;
 pub enum Action {
     /// `sh -c cmd`, detached. Output goes to deskd's log.
     Shell { cmd: String },
-    /// A key combination sent to the focused window through Hyprland.
+    /// A key combination sent through Hyprland: to the focused window, or to
+    /// the window matching `window` (a Hyprland window selector such as
+    /// `class:^(discord)$`) without moving focus.
     Keys {
         #[serde(default)]
         mods: String,
         key: String,
+        #[serde(default)]
+        window: Option<String>,
     },
     /// playerctl: play-pause, next, previous, stop.
     Media { cmd: String },
@@ -60,12 +64,19 @@ const MEDIA_COMMANDS: &[&str] = &["play-pause", "next", "previous", "stop"];
 impl Action {
     pub fn validate(&self, pages: usize) -> Result<()> {
         match self {
-            Action::Keys { mods, key } => {
-                // Both are spliced into a Lua dispatcher call, so they are held
-                // to the characters Hyprland key names actually use.
+            Action::Keys { mods, key, window } => {
+                // All three are spliced into a Lua dispatcher call, so mods and
+                // key are held to the characters Hyprland key names use, and
+                // the selector (a regex) to anything that cannot end the
+                // string literal.
                 let ok = |s: &str| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ' ');
                 if key.is_empty() || !ok(key) || !ok(mods) {
                     bail!("keys: mods/key may only contain letters, digits, '_' and spaces");
+                }
+                if let Some(window) = window
+                    && (window.is_empty() || window.chars().any(|c| c == '"' || c == '\\' || c.is_control()))
+                {
+                    bail!("keys: window must be a non-empty selector without quotes, backslashes or control characters");
                 }
             }
             Action::Media { cmd } if !MEDIA_COMMANDS.contains(&cmd.as_str()) => {
@@ -85,8 +96,9 @@ impl Action {
         let run = |args: &[&str]| Effect::Run(args.iter().map(|s| s.to_string()).collect());
         match self {
             Action::Shell { cmd } => run(&["sh", "-c", cmd]),
-            Action::Keys { mods, key } => {
-                let lua = format!("hl.dsp.send_shortcut({{mods=\"{mods}\", key=\"{key}\"}})");
+            Action::Keys { mods, key, window } => {
+                let target = window.as_ref().map(|w| format!(", window=\"{w}\"")).unwrap_or_default();
+                let lua = format!("hl.dsp.send_shortcut({{mods=\"{mods}\", key=\"{key}\"{target}}})");
                 Effect::Run(vec!["hyprctl".into(), "dispatch".into(), lua])
             }
             Action::Media { cmd } => run(&["playerctl", cmd]),
@@ -138,13 +150,27 @@ mod tests {
 
     #[test]
     fn keys_become_a_hyprland_lua_dispatch() {
-        let action = Action::Keys { mods: "CTRL SHIFT".into(), key: "T".into() };
+        let action = Action::Keys { mods: "CTRL SHIFT".into(), key: "T".into(), window: None };
         assert_eq!(argv(action.effect()), ["hyprctl", "dispatch", r#"hl.dsp.send_shortcut({mods="CTRL SHIFT", key="T"})"#]);
     }
 
     #[test]
+    fn keys_can_target_an_unfocused_window() {
+        let action = Action::Keys { mods: "CTRL SHIFT".into(), key: "M".into(), window: Some("class:^(discord)$".into()) };
+        action.validate(1).unwrap();
+        assert_eq!(
+            argv(action.effect())[2],
+            r#"hl.dsp.send_shortcut({mods="CTRL SHIFT", key="M", window="class:^(discord)$"})"#
+        );
+        for bad in ["", "class:x\"}) os.execute(\"y", "class:\\x", "class:x\n"] {
+            let action = Action::Keys { mods: String::new(), key: "M".into(), window: Some(bad.into()) };
+            assert!(action.validate(1).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn keys_reject_lua_injection() {
-        let action = Action::Keys { mods: String::new(), key: "T\"}) os.execute(\"x".into() };
+        let action = Action::Keys { mods: String::new(), key: "T\"}) os.execute(\"x".into(), window: None };
         assert!(action.validate(1).is_err());
     }
 

@@ -8,6 +8,8 @@
 # Actions:
 #   { type = "shell", cmd = "..." }                 sh -c, detached
 #   { type = "keys", mods = "CTRL SHIFT", key = "T" }  shortcut to the focused window (Hyprland)
+#   { type = "keys", mods = "CTRL SHIFT", key = "M", window = "class:^(discord)$" }
+#                                                   ...or to that window, leaving focus where it is
 #   { type = "media", cmd = "play-pause" }          playerctl: play-pause | next | previous | stop
 #   { type = "volume", step = 5 }                   default output, percent (negative lowers)
 #   { type = "mute" }                               toggle default output mute
