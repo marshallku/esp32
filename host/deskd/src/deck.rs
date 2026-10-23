@@ -128,6 +128,7 @@ impl Deck {
         Key {
             label: pick(&k.label, &k.label_on),
             sub: pick(&k.sub, &k.sub_on),
+            icon: if on { k.icon_on.as_ref().or(k.icon.as_ref()) } else { k.icon.as_ref() }.cloned().unwrap_or_default(),
             // Validated at load; unreachable defaults keep render infallible.
             bg: parse_color(&k.color).unwrap_or(0x303030),
             fg: parse_color(&k.text).unwrap_or(0xFFFFFF),

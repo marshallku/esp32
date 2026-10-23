@@ -4,6 +4,7 @@ name = "main"
 
 [[page.key]]
 label = "Touch A"
+icon = "pencil"
 label_on = "Touched"
 color = "#204060"
 state = "touched"
@@ -11,6 +12,8 @@ action = { type = "shell", cmd = "date +%s.%N > \"$E2E_OUT/pressed-a\"" }
 
 [[page.key]]
 label = "Mic"
+icon = "mic"
+icon_on = "mic-off"
 sub = "live"
 sub_on = "muted"
 state = "mic-muted"
@@ -18,6 +21,7 @@ action = { type = "shell", cmd = "true" }
 
 [[page.key]]
 label = "Next page"
+icon = "arrow-right"
 action = { type = "page", index = 1 }
 
 [[page]]
@@ -25,11 +29,13 @@ name = "second"
 
 [[page.key]]
 label = "Touch B"
+icon = "pencil"
 color = "#602040"
 action = { type = "shell", cmd = "date +%s.%N > \"$E2E_OUT/pressed-b\"" }
 
 [[page.key]]
 label = "Dashboard"
+icon = "layout-dashboard"
 action = { type = "dashboard" }
 
 # Polled hourly: only the burst after a press can turn it on in time.

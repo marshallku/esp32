@@ -61,6 +61,9 @@ const PASSWORD: &str = env!("WIFI_PASSWORD");
 
 /// Touch poll and UI loop period. The GT911 reports at ~100 Hz.
 const POLL_MS: u64 = 10;
+/// A redraw slower than this is logged. A full deck takes ~125 ms today
+/// (icons add ~4 ms), so this flags a regression, not normal load.
+const SLOW_REDRAW_MS: u64 = 250;
 
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
@@ -193,8 +196,13 @@ async fn main(spawner: Spawner) -> ! {
         // `|` rather than `||`: the app's dirty flag must be taken (cleared)
         // even when the dashboard alone would already force a redraw.
         if app.take_dirty() | (dash_changed && matches!(app.view(), View::Dashboard)) {
+            let started = Instant::now();
             ui::draw(&mut display.canvas(), &app, &dash);
             display.present();
+            let took = started.elapsed().as_millis();
+            if took > SLOW_REDRAW_MS {
+                log::warn!("redraw took {took} ms");
+            }
         }
 
         Timer::after_millis(POLL_MS).await;

@@ -13,5 +13,6 @@ extern crate alloc;
 pub mod app;
 pub mod geometry;
 pub mod gesture;
+pub mod icons;
 pub mod protocol;
 pub mod text;

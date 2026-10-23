@@ -7,6 +7,7 @@
 use desk_core::{
     app::{App, Prompt, View},
     geometry::{self, Rect, STRIP_H, W},
+    icons,
     protocol::Key,
     text::{self, BODY_COLS, BODY_ROWS, GLYPH_H, LABEL_COLS, SUB_MAX},
 };
@@ -23,7 +24,7 @@ use embedded_graphics::{
 
 use crate::{
     dashboard::{self, Dash},
-    notes_screen, pcstats, unifont,
+    icon, notes_screen, pcstats, unifont,
 };
 
 const BG: Rgb565 = Rgb565::BLACK;
@@ -33,6 +34,11 @@ const WARN: Rgb565 = Rgb565::new(31, 20, 0);
 const ALARM: Rgb565 = Rgb565::new(24, 4, 4);
 /// dunst's mauve, as on the notifications screen.
 const UNREAD: Rgb565 = Rgb565::new(25, 40, 30);
+/// Space between a key's icon and its label.
+const ICON_GAP: i32 = 6;
+/// Bottom of a key kept clear of an icon block: the "on" bar's 12 px and a
+/// little air.
+const BAR_RESERVE: i32 = 14;
 
 pub fn draw<D: DrawTarget<Color = Rgb565>>(target: &mut D, app: &App, dash: &Dash) {
     let _ = target.clear(BG);
@@ -120,7 +126,16 @@ fn draw_key<D: DrawTarget<Color = Rgb565>>(target: &mut D, r: Rect, key: &Key) {
         (false, true) => 14,
         (false, false) => unifont::LINE_H + 4,
     };
-    let mut y = r.y as i32 + (r.h as i32 - lines.len() as i32 * line_h - sub_h) / 2;
+    // An icon goes above the label; the block then stays clear of the "on"
+    // bar at the bottom. Keys without one are laid out as they always were.
+    let has_icon = icons::get(&key.icon).is_some();
+    let (icon_h, reserve) = if has_icon { (i32::from(icons::SIZE) + ICON_GAP, BAR_RESERVE) } else { (0, 0) };
+    let block = icon_h + lines.len() as i32 * line_h + sub_h;
+    let mut y = r.y as i32 + (r.h as i32 - reserve - block) / 2;
+    if has_icon {
+        icon::draw(target, &key.icon, Point::new(cx - i32::from(icons::SIZE) / 2, y), fg, bg);
+        y += icon_h;
+    }
     let centered = TextStyleBuilder::new().alignment(Alignment::Center).baseline(Baseline::Top).build();
     for line in lines {
         if key.label.is_ascii() {

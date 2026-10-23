@@ -207,6 +207,16 @@ true while it exits 0 (a VPN being up, a service running). After any key that
 runs something those commands are polled every second for a few seconds, so
 a key that toggles one shows the result right away.
 
+Keys can carry an icon above the label: `icon = "mic"`, and `icon_on =
+"mic-off"` for while the state is true. The icons are a fixed set of Lucide
+shapes (ISC, `tools/icons/LICENSE-lucide`) built into the firmware as 48×48
+4-bit coverage maps and tinted with the key's text colour. deskd rejects a
+name outside the set, so a profile cannot ask for an icon the panel lacks. To
+change the set, edit `tools/icons/icons.txt` and run `tools/icons/gen.py`
+(needs `rsvg-convert` and Pillow); it rewrites
+`host/desk-core/src/icons/{icons.bin,names.rs}`, then reflash. Drawing them
+adds about 4 ms to a full deck redraw of about 125 ms.
+
 ### The wire protocol
 
 JSON lines over the CH340 at 921600 (`host/desk-core/src/protocol.rs`). The

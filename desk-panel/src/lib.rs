@@ -6,6 +6,7 @@ pub mod dashboard;
 pub mod display;
 pub mod framebuffer;
 pub mod gt911;
+pub mod icon;
 pub mod link;
 pub mod notes_screen;
 pub mod pcstats;

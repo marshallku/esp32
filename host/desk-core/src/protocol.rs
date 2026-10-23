@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change. `hello` carries it both ways and the
 /// host refuses a device that disagrees.
-pub const PROTO: u16 = 2;
+pub const PROTO: u16 = 3;
 
 /// Longest line either side may send, newline included. Sized so a full page
 /// of keys at the label caps in `text` fits even when every character needs a
@@ -40,6 +40,10 @@ pub struct Key {
     pub label: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sub: String,
+    /// A name from `icons::NAMES`, drawn above the label. The panel draws
+    /// none for a name it does not have.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
     pub bg: u32,
     pub fg: u32,
     /// A toggle in its active state. Drawn inverted with an accent bar, so it
@@ -226,11 +230,19 @@ mod tests {
     fn worst_case_page_fits_one_line() {
         use crate::text::{LABEL_MAX, SUB_MAX};
         // Every character a quote: each costs two bytes once escaped.
+        let longest_icon = crate::icons::NAMES.iter().max_by_key(|n| n.len()).unwrap();
         let full_page = HostMsg::Page {
             generation: u32::MAX,
             index: u8::MAX,
             keys: vec![
-                Key { label: "\"".repeat(LABEL_MAX), sub: "\\".repeat(SUB_MAX), bg: 0xFFFFFF, fg: 0xFFFFFF, on: true };
+                Key {
+                    label: "\"".repeat(LABEL_MAX),
+                    sub: "\\".repeat(SUB_MAX),
+                    icon: (*longest_icon).into(),
+                    bg: 0xFFFFFF,
+                    fg: 0xFFFFFF,
+                    on: true,
+                };
                 KEYS_PER_PAGE
             ],
         };

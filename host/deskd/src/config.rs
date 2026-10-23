@@ -10,6 +10,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use desk_core::{
+    icons,
     protocol::{self, HostMsg, KEYS_PER_PAGE, Key, MAX_LINE, MAX_PAGES},
     text,
 };
@@ -110,6 +111,12 @@ pub struct KeyConfig {
     pub label_on: Option<String>,
     #[serde(default)]
     pub sub_on: Option<String>,
+    /// A built-in icon (`desk_core::icons::NAMES`) drawn above the label,
+    /// and the one to show instead while `state` is true.
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub icon_on: Option<String>,
     pub action: Action,
 }
 
@@ -197,6 +204,9 @@ fn validate_pages(pages: &[Page], commands: &BTreeMap<String, CommandState>) -> 
                     states::OBS_MUTED
                 );
             }
+            if let Some(icon) = [&key.icon, &key.icon_on].into_iter().flatten().find(|i| icons::get(i).is_none()) {
+                bail!("key '{}': no icon '{}' (the built-in set is listed in tools/icons/icons.txt)", key.label, icon);
+            }
             key.action.validate(pages.len()).with_context(|| format!("key '{}'", key.label))?;
             for label in [Some(&key.label), key.label_on.as_ref()].into_iter().flatten() {
                 if !text::label_fits(label) {
@@ -223,14 +233,24 @@ fn validate_pages(pages: &[Page], commands: &BTreeMap<String, CommandState>) -> 
 /// overlong line on every retry, so a profile that could ever produce one is
 /// rejected at load rather than failing to appear later.
 fn worst_case_page(page: &Page) -> HostMsg {
-    let longer = |a: &String, b: &Option<String>| match b {
-        Some(b) if b.len() > a.len() => b.clone(),
-        _ => a.clone(),
+    // Longer as encoded: quotes and backslashes double on the wire, so the
+    // shorter text can be the longer line.
+    let wire = |s: &str| serde_json::to_string(s).map_or(usize::MAX, |j| j.len());
+    let longer = |a: &str, b: Option<&str>| match b {
+        Some(b) if wire(b) > wire(a) => b.to_string(),
+        _ => a.to_string(),
     };
     let keys = page
         .keys
         .iter()
-        .map(|k| Key { label: longer(&k.label, &k.label_on), sub: longer(&k.sub, &k.sub_on), bg: 0xFFFFFF, fg: 0xFFFFFF, on: true })
+        .map(|k| Key {
+            label: longer(&k.label, k.label_on.as_deref()),
+            sub: longer(&k.sub, k.sub_on.as_deref()),
+            icon: longer(k.icon.as_deref().unwrap_or(""), k.icon_on.as_deref()),
+            bg: 0xFFFFFF,
+            fg: 0xFFFFFF,
+            on: true,
+        })
         .collect();
     HostMsg::Page { generation: u32::MAX, index: u8::MAX, keys }
 }
@@ -399,6 +419,34 @@ action = { type = "obs-scene", scene = "Desk" }
         assert!(parse(&empty).is_err(), "no command");
         let upper = format!("{SAMPLE}\n[state.VPN]\ncmd = \"true\"\n");
         assert!(parse(&upper).is_err(), "name outside a-z0-9-");
+    }
+
+    #[test]
+    fn icons_are_checked_against_the_built_in_set() {
+        let icons = SAMPLE.replace("state = \"mic-muted\"", "state = \"mic-muted\"\nicon = \"mic\"\nicon_on = \"mic-off\"");
+        let config = parse(&icons).unwrap();
+        assert_eq!(config.pages[0].keys[0].icon_on.as_deref(), Some("mic-off"));
+        assert!(parse(&icons.replace("\"mic-off\"", "\"nope\"")).is_err());
+    }
+
+    #[test]
+    fn worst_case_counts_escaped_length() {
+        let key = |label: &str, label_on: &str| KeyConfig {
+            label: label.into(),
+            sub: String::new(),
+            color: default_bg(),
+            text: default_fg(),
+            state: None,
+            label_on: Some(label_on.into()),
+            sub_on: None,
+            icon: None,
+            icon_on: None,
+            action: Action::Dashboard,
+        };
+        // Four bytes raw but eight on the wire, against five plain ones.
+        let page = Page { name: "x".into(), keys: vec![key("abcde", "\"\"\"\"")] };
+        let HostMsg::Page { keys, .. } = worst_case_page(&page) else { panic!() };
+        assert_eq!(keys[0].label, "\"\"\"\"");
     }
 
     #[test]

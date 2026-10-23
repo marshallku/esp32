@@ -5,6 +5,10 @@
 # Labels may be Korean (drawn with Unifont; two lines of eight syllables at
 # most). Colours are "#rrggbb".
 #
+# `icon = "mic"` draws a built-in icon above the label, in the text colour;
+# `icon_on` replaces it while the key's state is true. The names are Lucide's
+# (https://lucide.dev), limited to the set in tools/icons/icons.txt.
+#
 # Actions:
 #   { type = "shell", cmd = "..." }                 sh -c, detached
 #   { type = "keys", mods = "CTRL SHIFT", key = "T" }  shortcut to the focused window (Hyprland)
@@ -42,6 +46,8 @@ name = "main"
 
 [[page.key]]
 label = "Mic"
+icon = "mic"
+icon_on = "mic-off"
 sub = "live"
 sub_on = "MUTED"
 color = "#2d5a3d"
@@ -50,43 +56,51 @@ action = { type = "mic-mute" }
 
 [[page.key]]
 label = "Vol -"
+icon = "volume-1"
 color = "#2a3f5f"
 action = { type = "volume", step = -5 }
 
 [[page.key]]
 label = "Vol +"
+icon = "volume-2"
 color = "#2a3f5f"
 action = { type = "volume", step = 5 }
 
 [[page.key]]
 label = "Prev"
+icon = "skip-back"
 color = "#4a3a5e"
 action = { type = "media", cmd = "previous" }
 
 [[page.key]]
 label = "Play"
+icon = "play"
 sub = "pause"
 color = "#4a3a5e"
 action = { type = "media", cmd = "play-pause" }
 
 [[page.key]]
 label = "Next"
+icon = "skip-forward"
 color = "#4a3a5e"
 action = { type = "media", cmd = "next" }
 
 [[page.key]]
 label = "Terminal"
+icon = "terminal"
 color = "#333333"
 action = { type = "shell", cmd = "kitty" }
 
 [[page.key]]
 label = "Screenshot"
+icon = "scan"
 sub = "region"
 color = "#333333"
 action = { type = "shell", cmd = "grim -g \"$(slurp)\" - | wl-copy" }
 
 [[page.key]]
 label = "OBS"
+icon = "video"
 color = "#5e4a2a"
 action = { type = "page", index = 1 }
 
@@ -95,18 +109,22 @@ name = "obs"
 
 [[page.key]]
 label = "Scene"
+icon = "clapperboard"
 color = "#2a3f5f"
 state = "obs-scene:Scene"
 action = { type = "obs-scene", scene = "Scene" }
 
 [[page.key]]
 label = "Scene 2"
+icon = "clapperboard"
 color = "#2a3f5f"
 state = "obs-scene:Scene 2"
 action = { type = "obs-scene", scene = "Scene 2" }
 
 [[page.key]]
 label = "OBS Mic"
+icon = "mic"
+icon_on = "mic-off"
 sub = "live"
 sub_on = "MUTED"
 color = "#2d5a3d"
@@ -115,6 +133,7 @@ action = { type = "obs-mute", input = "Mic/Aux" }
 
 [[page.key]]
 label = "REC"
+icon = "circle"
 sub = "start"
 sub_on = "recording"
 color = "#6a2a2a"
@@ -123,6 +142,7 @@ action = { type = "obs-record" }
 
 [[page.key]]
 label = "LIVE"
+icon = "radio"
 sub = "start"
 sub_on = "streaming"
 color = "#6a2a2a"
@@ -131,6 +151,7 @@ action = { type = "obs-stream" }
 
 [[page.key]]
 label = "OBS"
+icon = "video"
 sub = "offline"
 sub_on = "connected"
 color = "#333333"
@@ -139,11 +160,13 @@ action = { type = "shell", cmd = "obs" }
 
 [[page.key]]
 label = "Back"
+icon = "arrow-left"
 color = "#5e4a2a"
 action = { type = "page", index = 0 }
 
 [[page.key]]
 label = "More"
+icon = "arrow-right"
 color = "#5e4a2a"
 action = { type = "page", index = 2 }
 
@@ -152,6 +175,8 @@ name = "more"
 
 [[page.key]]
 label = "Speaker"
+icon = "volume-2"
+icon_on = "volume-x"
 sub = "on"
 sub_on = "MUTED"
 color = "#2d5a3d"
@@ -160,17 +185,20 @@ action = { type = "mute" }
 
 [[page.key]]
 label = "Back"
+icon = "arrow-left"
 color = "#5e4a2a"
 action = { type = "page", index = 1 }
 
 [[page.key]]
 label = "Home"
+icon = "layout-dashboard"
 sub = "dashboard"
 color = "#5e4a2a"
 action = { type = "dashboard" }
 
 [[page.key]]
 label = "Sunshine"
+icon = "cast"
 sub = "off"
 sub_on = "running"
 color = "#2a3f5f"
@@ -190,32 +218,38 @@ name = "browse"
 
 [[app.page.key]]
 label = "Back"
+icon = "arrow-left"
 color = "#2a3f5f"
 action = { type = "keys", mods = "ALT", key = "Left" }
 
 [[app.page.key]]
 label = "Forward"
+icon = "arrow-right"
 color = "#2a3f5f"
 action = { type = "keys", mods = "ALT", key = "Right" }
 
 [[app.page.key]]
 label = "New tab"
+icon = "plus"
 color = "#333333"
 action = { type = "keys", mods = "CTRL", key = "T" }
 
 [[app.page.key]]
 label = "Close tab"
+icon = "x"
 color = "#6a2a2a"
 action = { type = "keys", mods = "CTRL", key = "W" }
 
 [[app.page.key]]
 label = "Reopen"
+icon = "rotate-ccw"
 sub = "closed tab"
 color = "#333333"
 action = { type = "keys", mods = "CTRL SHIFT", key = "T" }
 
 [[app.page.key]]
 label = "Home"
+icon = "layout-dashboard"
 sub = "dashboard"
 color = "#5e4a2a"
 action = { type = "dashboard" }
@@ -229,50 +263,59 @@ name = "voice"
 
 [[app.page.key]]
 label = "Mute"
+icon = "mic-off"
 color = "#2d5a3d"
 action = { type = "keys", mods = "CTRL SHIFT", key = "M" }
 
 [[app.page.key]]
 label = "Deafen"
+icon = "headphone-off"
 color = "#2d5a3d"
 action = { type = "keys", mods = "CTRL SHIFT", key = "D" }
 
 [[app.page.key]]
 label = "Find"
+icon = "search"
 sub = "quick switch"
 color = "#333333"
 action = { type = "keys", mods = "CTRL", key = "K" }
 
 [[app.page.key]]
 label = "Prev"
+icon = "arrow-up"
 sub = "channel"
 color = "#2a3f5f"
 action = { type = "keys", mods = "ALT", key = "Up" }
 
 [[app.page.key]]
 label = "Next"
+icon = "arrow-down"
 sub = "channel"
 color = "#2a3f5f"
 action = { type = "keys", mods = "ALT", key = "Down" }
 
 [[app.page.key]]
 label = "Unread"
+icon = "bell"
 sub = "next"
 color = "#4a3a5e"
 action = { type = "keys", mods = "ALT SHIFT", key = "Down" }
 
 [[app.page.key]]
 label = "Mark read"
+icon = "check"
 color = "#4a3a5e"
 action = { type = "keys", key = "Escape" }
 
 [[app.page.key]]
 label = "Upload"
+icon = "upload"
 color = "#333333"
 action = { type = "keys", mods = "CTRL SHIFT", key = "U" }
 
 [[app.page.key]]
 label = "Home"
+icon = "layout-dashboard"
 sub = "dashboard"
 color = "#5e4a2a"
 action = { type = "dashboard" }
